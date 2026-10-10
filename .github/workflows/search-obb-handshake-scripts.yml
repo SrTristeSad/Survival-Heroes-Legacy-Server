@@ -25,7 +25,7 @@ jobs:
           mkdir -p client work/xapk reports
           gh release download apk --pattern '*.xapk' --dir client
           unzip -q "$(find client -type f -name '*.xapk' | head -n1)" -d work/xapk
-          find work/xapk -maxdepth 2 -type f -printf '%p\n'
+          find work/xapk -maxdepth 3 -type f -printf '%p\n'
       - name: Search decompressed script/config resources
         run: |
           OBB="$(find work/xapk -type f -name '*.obb' | head -n1)"
@@ -39,6 +39,7 @@ jobs:
           obb = pathlib.Path(sys.argv[1])
           spec = importlib.util.spec_from_file_location('pck0', 'tools/pck0_extract.py')
           pck0 = importlib.util.module_from_spec(spec)
+          sys.modules[spec.name] = pck0
           spec.loader.exec_module(pck0)
 
           header, entries = pck0.load_index(obb)
