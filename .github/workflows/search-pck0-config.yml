@@ -1,0 +1,52 @@
+name: Search PCK0 config schema
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'tools/pck0_grep.py'
+      - '.github/workflows/search-pck0-config.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  search:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download archived client OBB
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euxo pipefail
+          mkdir -p client work/xapk reports
+          gh release download apk --pattern '*.xapk' --dir client
+          unzip -q "$(find client -type f -name '*.xapk' | head -n1)" -d work/xapk
+          find work/xapk -type f -name '*.obb' -print -quit > work/obb-path.txt
+      - name: Search all INI resources for server schema keys
+        run: |
+          set -euxo pipefail
+          OBB="$(cat work/obb-path.txt)"
+          python3 tools/pck0_grep.py "$OBB" \
+            'server_(id|addr|port|issuer|district|name|recommend|page)|\[server[^]]*\]' \
+            --path '\.ini$' --context 5 --limit 1000 \
+            > reports/server-schema-hits.txt 2> reports/server-schema-stats.txt
+          cat reports/server-schema-stats.txt
+          sed -n '1,1500p' reports/server-schema-hits.txt
+      - name: Search XML/CSV/TXT too
+        run: |
+          set -euxo pipefail
+          OBB="$(cat work/obb-path.txt)"
+          python3 tools/pck0_grep.py "$OBB" \
+            'server_(id|addr|port|issuer|district)|server_list\.ini' \
+            --path '\.(xml|csv|txt|cfg|conf|dat)$' --context 3 --limit 500 \
+            > reports/server-schema-other-hits.txt 2> reports/server-schema-other-stats.txt
+      - name: Upload reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: survival-heroes-pck0-server-schema-search
+          path: reports/
+          retention-days: 7
