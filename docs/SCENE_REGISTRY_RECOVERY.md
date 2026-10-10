@@ -1,5 +1,41 @@
-# Scene registry recovery
+# Recuperação do registro de cenas
 
-The archived 3.3.3 client resolves `SERVER_ENTRY_SCENE` using a textual key formatted as `%u-%u` from the two little-endian `uint32` values at packet offsets `+5` and `+9`.
+A análise do OBB do cliente 3.3.3 identificou o registro principal de cenas em:
 
-This one-shot analysis extracts only the small scene-registry/configuration files needed to identify valid client scene keys. Proprietary assets remain outside the repository.
+```text
+res\share\scenes.ini
+```
+
+Também foram localizados arquivos relacionados, incluindo `scene_group.xml` e configurações de mapas como `moba_chiji.xml`.
+
+## Campos relevantes
+
+Cada seção numérica do `scenes.ini` representa um `Scene ID`. Entre os campos associados aparecem:
+
+- `Member`
+- `Config`
+- `Script`
+- `Clonable`
+- `BattleWarID`
+- `PreLoad`
+
+A análise nativa confirmou que a identidade composta usada em runtime é `Scene-Member`.
+
+## Cena MOBA confirmada
+
+```text
+Scene = 119
+Member = 0
+Config = ini\scene\moba_chiji
+Clonable = 1
+BattleWarID = 1
+PreLoad = 1
+```
+
+Chave resultante:
+
+```text
+119-0
+```
+
+Os arquivos proprietários extraídos durante a pesquisa não são versionados neste repositório; somente fatos necessários para interoperabilidade são documentados.
