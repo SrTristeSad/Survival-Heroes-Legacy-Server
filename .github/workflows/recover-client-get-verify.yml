@@ -1,5 +1,6 @@
 name: Recover CLIENT_GET_VERIFY sender
 
+# Focused recovery of the pre-login verify request packet.
 on:
   push:
     branches: [main]
