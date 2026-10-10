@@ -1,0 +1,92 @@
+name: Trace FormLoginServers schema strings
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/xref-form-login-strings.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  xref:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install tools
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq binutils-aarch64-linux-gnu
+      - name: Download libapp
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euxo pipefail
+          mkdir -p client work/xapk work/apk reports
+          gh release download apk --pattern '*.xapk' --dir client
+          unzip -q "$(find client -type f -name '*.xapk' | head -n1)" -d work/xapk
+          unzip -q "$(find work/xapk -type f -name '*.apk' | head -n1)" 'lib/arm64-v8a/libapp.so' -d work/apk
+      - name: Trace exact UI/server-list strings through full disassembly
+        shell: bash
+        run: |
+          set -euxo pipefail
+          LIB=work/apk/lib/arm64-v8a/libapp.so
+          aarch64-linux-gnu-objdump -d -C --no-show-raw-insn "$LIB" > work/full-dis.txt
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          lines=Path('work/full-dis.txt').read_text(errors='replace').splitlines()
+          targets={
+            0x24b3240:'server_recommend',
+            0x24b32c0:'server_list_roles',
+            0x24b3338:'server_Issuer_list',
+            0x24b3350:'server_page_',
+            0x24b3360:'server_page',
+            0x24b3410:'server_name_%d',
+            0x24b31d8:'server_stop',
+            0x24b31e8:'server_good',
+            0x24b31f8:'server_normal',
+            0x24b3208:'server_hot',
+            0x24b3218:'server_new',
+            0x24b3468:'LoadServerList log',
+            0x2bf3870:'server_list.ini',
+          }
+          pages={a & ~0xfff for a in targets}
+          regs={}
+          hits=[]
+          for i,line in enumerate(lines):
+              m=re.search(r'^\s*([0-9a-f]+):\s+adrp\s+(x\d+),\s*([0-9a-f]+)',line)
+              if m:
+                  page=int(m.group(3),16)
+                  regs[m.group(2)]=(page,i)
+              m=re.search(r'^\s*([0-9a-f]+):\s+add\s+(x\d+),\s*(x\d+),\s*#0x([0-9a-f]+)',line)
+              if not m or m.group(2)!=m.group(3):
+                  continue
+              reg=m.group(2)
+              if reg not in regs or i-regs[reg][1] > 18:
+                  continue
+              addr=regs[reg][0]+int(m.group(4),16)
+              if addr in targets:
+                  hits.append((i,int(m.group(1),16),addr,targets[addr]))
+          out=[]
+          for n,(i,pc,addr,name) in enumerate(hits,1):
+              out.append(f'===== HIT {n}: {name} target=0x{addr:x} pc=0x{pc:x} =====')
+              lo=max(0,i-70); hi=min(len(lines),i+120)
+              out.extend(lines[lo:hi])
+          Path('reports/form-login-schema-xrefs.txt').write_text('\n'.join(out)+'\n',encoding='utf-8')
+          with Path('reports/form-login-hit-summary.txt').open('w',encoding='utf-8') as f:
+              for _,pc,addr,name in hits:
+                  f.write(f'0x{pc:x}\t0x{addr:x}\t{name}\n')
+          PY
+          cat reports/form-login-hit-summary.txt
+      - name: Dump all nearby literal strings
+        run: |
+          LIB=work/apk/lib/arm64-v8a/libapp.so
+          strings -a -t x "$LIB" | awk '$1 >= "24b3100" && $1 <= "24b3530"' > reports/form-login-literals.txt || true
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: survival-heroes-form-login-string-xrefs
+          path: reports/
+          retention-days: 7
