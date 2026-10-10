@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"io"
 	"log"
 	"net"
@@ -116,5 +115,3 @@ func main() {
 		go handle(conn, expectedIssuer, expectedGameID, records)
 	}
 }
-
-var _ = fmt.Sprintf
