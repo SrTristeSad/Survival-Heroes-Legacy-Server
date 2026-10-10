@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/binary"
 	"net"
 	"testing"
 
@@ -98,5 +99,67 @@ func TestReadLoginPacketRawLab(t *testing.T) {
 	}
 	if got.Consumed != len(payload) || got.Meta.LoginType != 100 {
 		t.Fatalf("unexpected result: %#v", got)
+	}
+}
+
+func TestLoadVerifyReplyConfigDisabledByDefault(t *testing.T) {
+	t.Setenv("MEMBER_SEND_SET_VERIFY", "")
+	cfg, err := loadVerifyReplyConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Enabled {
+		t.Fatal("experimental verify reply unexpectedly enabled")
+	}
+}
+
+func TestLoadVerifyReplyConfigModeOneRequiresKey(t *testing.T) {
+	t.Setenv("MEMBER_SEND_SET_VERIFY", "true")
+	t.Setenv("MEMBER_SET_VERIFY_MODE", "1")
+	t.Setenv("MEMBER_SET_VERIFY_KEY_HEX", "")
+	if _, err := loadVerifyReplyConfig(); err == nil {
+		t.Fatal("expected missing mode-1 key to fail")
+	}
+}
+
+func TestSendSetVerifyFramesModeZero(t *testing.T) {
+	server, client := net.Pipe()
+	defer server.Close()
+	defer client.Close()
+
+	cfg := verifyReplyConfig{
+		Enabled: true,
+		Packet: legacylogin.SetVerifyPacket{
+			Field0: 7,
+			Mode:   0,
+		},
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- sendSetVerify(server, "test", cfg) }()
+
+	var header [4]byte
+	if _, err := client.Read(header[:]); err != nil {
+		t.Fatal(err)
+	}
+	n := binary.LittleEndian.Uint32(header[:])
+	if n != legacylogin.ServerSetVerifyBaseSize {
+		t.Fatalf("payload length=%d want=%d", n, legacylogin.ServerSetVerifyBaseSize)
+	}
+	payload := make([]byte, n)
+	if _, err := client.Read(payload); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if payload[0] != legacylogin.ServerSetVerifyOpcode {
+		t.Fatalf("opcode=%02x", payload[0])
+	}
+	if got := binary.LittleEndian.Uint32(payload[1:5]); got != 7 {
+		t.Fatalf("field0=%d", got)
+	}
+	if got := binary.LittleEndian.Uint32(payload[5:9]); got != 0 {
+		t.Fatalf("mode=%d", got)
 	}
 }
