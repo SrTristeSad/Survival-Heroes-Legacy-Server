@@ -27,8 +27,8 @@ Clean-room community server reimplementation scaffold for preserving **Survival 
 
 ```bash
 cp .env.example .env
-./scripts/setup.sh
-./scripts/smoke-test.sh
+sh scripts/setup.sh
+sh scripts/smoke-test.sh
 ```
 
 Services:
