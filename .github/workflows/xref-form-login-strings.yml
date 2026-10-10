@@ -1,3 +1,4 @@
+# Trace strings used specifically by the original server-selection screen.
 name: Trace FormLoginServers schema strings
 
 on:
@@ -52,14 +53,12 @@ jobs:
             0x24b3468:'LoadServerList log',
             0x2bf3870:'server_list.ini',
           }
-          pages={a & ~0xfff for a in targets}
           regs={}
           hits=[]
           for i,line in enumerate(lines):
               m=re.search(r'^\s*([0-9a-f]+):\s+adrp\s+(x\d+),\s*([0-9a-f]+)',line)
               if m:
-                  page=int(m.group(3),16)
-                  regs[m.group(2)]=(page,i)
+                  regs[m.group(2)]=(int(m.group(3),16),i)
               m=re.search(r'^\s*([0-9a-f]+):\s+add\s+(x\d+),\s*(x\d+),\s*#0x([0-9a-f]+)',line)
               if not m or m.group(2)!=m.group(3):
                   continue
