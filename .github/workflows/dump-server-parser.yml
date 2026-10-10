@@ -1,3 +1,4 @@
+# Recover the exact generated server_list.ini record schema from the archived client.
 name: Dump legacy server-list parser
 
 on:
@@ -60,7 +61,6 @@ jobs:
                   if 0x2490000 <= a <= 0x24c0000:
                       vals[a]=m.group(2)
           dis=Path('reports/server-record-parser-disassembly.txt').read_text(errors='replace').splitlines()
-          # Resolve common ADRP+ADD pairs heuristically in a short window.
           regs={}
           out=[]
           for line in dis:
