@@ -17,6 +17,26 @@ The first byte of each decoded payload is the old `GameReceiver` / `GameSender` 
 
 This framing is implemented by `internal/legacylogin.FrameWirePayload` and `ParseWireFrame`.
 
+## Confirmed client-to-server handshake opcodes
+
+The client enum/string table is zero-based, and multiple native packet builders independently confirm its numbering:
+
+| Opcode | Client message | Evidence |
+|---:|---|---|
+| `0x00` | `CLIENT_GET_VERIFY` | native sender emits exactly one payload byte `00` |
+| `0x01` | `CLIENT_RET_ENCODE` | zero-based enum between confirmed opcodes 0 and 2; body still under recovery |
+| `0x02` | `CLIENT_LOGIN` | recovered native login builder writes opcode `02` |
+
+The native `CLIENT_GET_VERIFY` sender passes payload length `1` to the game socket and writes `0x00` as the only payload byte. With `LenSplitProtocol`, its complete wire representation is therefore:
+
+```text
+01 00 00 00  00
+^^^^^^^^^^^  ^^
+payload_len  CLIENT_GET_VERIFY
+```
+
+Later client packet builders provide additional cross-checks for the same zero-based table: observed opcodes `0x03`, `0x04`, `0x06`, `0x07`, `0x08`, `0x09`, and `0x0c` align with the following enum entries for world-info, choose-role, delete-role, select, speech, ready, and revive-role messages.
+
 ## Confirmed server-to-client opcodes
 
 The ARM64 `GameReceiver` jump table was decoded directly rather than inferred from string order.
@@ -80,10 +100,20 @@ Role records begin at offset 41 when `role_count > 0`. Their grammar is not impl
 
 ## Client login request
 
-The already-recovered raw `CLIENT_LOGIN` payload begins with opcode `0x02`, family `0x300`, and the padded account/password/login-string structure documented in `CLIENT_3_3_3_ANALYSIS.md`.
+The recovered raw `CLIENT_LOGIN` payload begins with opcode `0x02`, family `0x300`, and the padded account/password/login-string structure documented in `CLIENT_3_3_3_ANALYSIS.md`.
 
-The client enum/string table places `CLIENT_GET_VERIFY` immediately before `CLIENT_LOGIN`, strongly suggesting client opcode `0x01`; however this document will mark that value confirmed only after the actual sender/connection-success path is located in native code.
+The currently confirmed beginning of the old handshake is therefore:
+
+```text
+client -> server  CLIENT_GET_VERIFY   opcode 0x00
+server -> client  SERVER_SET_VERIFY   opcode 0x01   # field semantics/order still being completed
+...
+client -> server  CLIENT_LOGIN        opcode 0x02   # later step; exact encode negotiation order still under recovery
+server -> client  SERVER_LOGIN_SUCCEED opcode 0x04  # after a successful login flow
+```
+
+`CLIENT_RET_ENCODE` (`0x01`) and `SERVER_SET_ENCODE` (`0x02`) clearly form part of the old encode-negotiation path, but their exact ordering and body grammar are intentionally not guessed yet.
 
 ## Safety / privacy in the compatibility server
 
-`cmd/member-server` validates login framing without logging or retaining account passwords, login tokens, or device identifier contents. It records only lengths and non-secret protocol selectors required for reverse engineering.
+`cmd/member-server` now dispatches the real pre-login `LenSplitProtocol` frames and recognizes `CLIENT_GET_VERIFY`, `CLIENT_RET_ENCODE`, and `CLIENT_LOGIN`. Login framing is validated without logging or retaining account passwords, login tokens, or device identifier contents. Only lengths and non-secret protocol selectors required for reverse engineering are recorded.
