@@ -1,29 +1,66 @@
-# Client compatibility work
+# Trabalho de compatibilidade com o cliente
 
-Target client: Survival Heroes 3.3.3 (`com.snailgamesusa.survival`).
+Cliente alvo: Survival Heroes 3.3.3 (`com.snailgamesusa.survival`).
 
-This repository intentionally does **not** include the proprietary APK/OBB/assets. The operator supplies a legitimately obtained client package locally.
+Este repositório intencionalmente **não** inclui APK, OBB ou recursos proprietários. O operador fornece localmente um pacote de cliente obtido de forma legítima.
 
-## Phase A — static inventory
+## Fase A — inventário estático
 
-1. Preserve untouched APK/XAPK/OBB and record SHA-256.
-2. Run `python3 tools/apk-scan/scan.py <client.xapk>`.
-3. Inventory AndroidManifest permissions, activities, native `.so` libraries and Unity metadata.
-4. Identify hard-coded bootstrap/login/content endpoints.
-5. Determine serialization/protocol candidates (JSON, protobuf, flatbuffers, custom binary).
+1. Preservar APK/XAPK/OBB sem modificações e registrar SHA-256.
+2. Executar as ferramentas de análise do projeto sobre o cliente.
+3. Inventariar permissões, activities, bibliotecas `.so` e runtime do jogo.
+4. Identificar endpoints fixos de bootstrap, login e conteúdo.
+5. Determinar serialização e protocolos usados pelo cliente.
+6. Separar fatos confirmados de hipóteses.
 
-## Phase B — network observation
+## Fase B — observação de rede
 
-Run only against a client/device you control. Record DNS lookups, connection destinations and TLS/plaintext characteristics. Do not intercept third-party credentials. We are interested in reconstructing the historical service interface, not accessing any surviving private service.
+Executar somente com cliente/dispositivo controlado pelo próprio testador. Registrar consultas DNS, destinos de conexão e características TLS/plaintext.
 
-## Phase C — clean-room compatibility
+Não interceptar credenciais de terceiros. O objetivo é reconstruir a interface histórica necessária para interoperabilidade, não acessar qualquer serviço privado sobrevivente.
 
-Implement observed request/response semantics in `gateway` and packet semantics in `game-server`, documenting every field as confirmed, inferred, or unknown. Keep placeholder protocol code separate from confirmed compatibility code.
+## Fase C — compatibilidade independente
 
-## First compatibility milestone
+Implementar as semânticas observadas em serviços próprios e documentar os campos como confirmados, inferidos ou desconhecidos.
 
-`3.3.3 client -> local bootstrap -> local login -> lobby shell`
+Código provisório deve permanecer separado do protocolo confirmado até que o comportamento seja validado.
 
-Second milestone:
+## Marcos de compatibilidade
 
-`two real clients -> local matchmaking -> same match -> movement visible on both clients`
+Primeiro marco:
+
+```text
+cliente 3.3.3
+→ bootstrap local
+→ login local
+→ personagem
+→ entrada confirmada no lobby/mapa original
+```
+
+Segundo marco:
+
+```text
+dois clientes reais
+→ matchmaking local
+→ mesma partida
+→ movimento visível nos dois clientes
+```
+
+Terceiro marco:
+
+```text
+partida completa
+→ combate
+→ loot
+→ fechamento da zona
+→ morte/vitória
+→ encerramento correto da sessão
+```
+
+## Situação atual
+
+Já foram recuperados bootstrap TCP/88, lista de servidores, framing de membro/login, handshake, login-success, registros de personagem, criação/seleção de personagem, `WORLD_INFO`, tabelas iniciais e `ENTRY_SCENE`.
+
+A chave de cena foi confirmada como `Scene-Member` e o primeiro mapa MOBA conhecido pelo cliente é `119-0`.
+
+O próximo passo crítico é validar esse fluxo em execução real com um cliente 3.3.3 do próprio testador apontado para a VPS.
