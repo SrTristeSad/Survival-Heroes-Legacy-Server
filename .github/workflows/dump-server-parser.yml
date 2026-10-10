@@ -1,0 +1,83 @@
+name: Dump legacy server-list parser
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/dump-server-parser.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  dump:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install tools
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq binutils-aarch64-linux-gnu
+      - name: Download libapp
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euxo pipefail
+          mkdir -p client work/xapk work/apk reports
+          gh release download apk --pattern '*.xapk' --dir client
+          unzip -q "$(find client -type f -name '*.xapk' | head -n1)" -d work/xapk
+          unzip -q "$(find work/xapk -type f -name '*.apk' | head -n1)" 'lib/arm64-v8a/libapp.so' -d work/apk
+      - name: Dump parser function and nearby constants
+        shell: bash
+        run: |
+          set -euxo pipefail
+          LIB=work/apk/lib/arm64-v8a/libapp.so
+          aarch64-linux-gnu-objdump -d -C --no-show-raw-insn \
+            --start-address=0xa49600 --stop-address=0xa4aa00 "$LIB" > reports/server-record-parser-disassembly.txt
+          aarch64-linux-gnu-nm -D -n -C "$LIB" | awk '$1 >= "00a47000" && $1 <= "00a4c000"' > reports/nearby-symbols.txt || true
+          strings -a -t x "$LIB" | awk '
+            {
+              addr=strtonum("0x"$1)
+              if ((addr>=0x24b2800 && addr<=0x24b2e00) ||
+                  (addr>=0x24ba500 && addr<=0x24ba700) ||
+                  (addr>=0x2494700 && addr<=0x2494a50) ||
+                  (addr>=0x24b3000 && addr<=0x24b3500)) print
+            }' > reports/server-parser-rodata-strings.txt
+          cat reports/server-parser-rodata-strings.txt
+      - name: Find all string references inside parser window
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re, subprocess
+          lib='work/apk/lib/arm64-v8a/libapp.so'
+          s=subprocess.check_output(['strings','-a','-t','x',lib],text=True,errors='replace').splitlines()
+          vals={}
+          for line in s:
+              m=re.match(r'\s*([0-9a-fA-F]+)\s+(.*)',line)
+              if m:
+                  a=int(m.group(1),16)
+                  if 0x2490000 <= a <= 0x24c0000:
+                      vals[a]=m.group(2)
+          dis=Path('reports/server-record-parser-disassembly.txt').read_text(errors='replace').splitlines()
+          # Resolve common ADRP+ADD pairs heuristically in a short window.
+          regs={}
+          out=[]
+          for line in dis:
+              mm=re.search(r'^\s*([0-9a-f]+):\s+adrp\s+(x\d+),\s*([0-9a-f]+)',line)
+              if mm:
+                  regs[mm.group(2)] = int(mm.group(3),16)
+              mm=re.search(r'^\s*([0-9a-f]+):\s+add\s+(x\d+),\s*(x\d+),\s*#0x([0-9a-f]+)',line)
+              if mm and mm.group(2)==mm.group(3) and mm.group(2) in regs:
+                  addr=regs[mm.group(2)] + int(mm.group(4),16)
+                  if addr in vals:
+                      out.append(f'{mm.group(1)}\t0x{addr:x}\t{vals[addr]}')
+          Path('reports/resolved-parser-strings.txt').write_text('\n'.join(out)+'\n',encoding='utf-8')
+          PY
+          cat reports/resolved-parser-strings.txt
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: survival-heroes-server-parser-dump
+          path: reports/
+          retention-days: 7
