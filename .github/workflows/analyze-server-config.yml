@@ -94,12 +94,17 @@ jobs:
       - name: Identificar singleton por relocacoes ELF
         run: |
           aarch64-linux-gnu-readelf -rW work/libapp.so > work/relocs.txt || true
-          grep -Ei '02be1d40|02bd9a48|Application|FileUtils|AssetsManager|PackageSystem|GameOption|Storage|Writable|External' work/relocs.txt \
+          grep -Ei '02be1d40|02bd9a48|02c633f8|02c7aba0|Application|FileUtils|AssetsManager|PackageSystem|GameOption|Storage|Writable|External' work/relocs.txt \
             > reports/relocacoes-caminho.txt || true
-          # Tambem tenta localizar simbolos/objetos globais proximos aos GOTs usados.
           aarch64-linux-gnu-nm -D -n -C work/libapp.so | \
             grep -E 'Singleton|ApplicationKit::Application|FileUtils|AssetsManager|PackageSystem|GameOption' \
             > reports/singletons-candidatos.txt || true
+          aarch64-linux-gnu-objdump -s \
+            --start-address=0x2c633c0 --stop-address=0x2c63480 work/libapp.so \
+            > reports/objeto-caminho-bytes.txt || true
+          aarch64-linux-gnu-objdump -s \
+            --start-address=0x2c7ab60 --stop-address=0x2c7ac20 work/libapp.so \
+            > reports/objeto-secundario-bytes.txt || true
       - uses: actions/upload-artifact@v4
         with:
           name: analise-server-txt
