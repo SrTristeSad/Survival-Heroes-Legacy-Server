@@ -1,5 +1,6 @@
 name: Recover exact legacy member opcodes
 
+# Focused recovery of the final old-protocol wire constants.
 on:
   push:
     branches: [main]
@@ -45,7 +46,7 @@ jobs:
         run: |
           python3 - <<'PY'
           from pathlib import Path
-          import re, subprocess
+          import re
           smap={}
           for line in Path('work/strings.txt').read_text(errors='replace').splitlines():
               m=re.match(r'\s*([0-9a-fA-F]+)\s+(.*)',line)
