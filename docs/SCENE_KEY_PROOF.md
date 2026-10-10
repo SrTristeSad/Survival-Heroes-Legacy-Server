@@ -1,47 +1,51 @@
-# Scene composite key proof
+# Prova da chave composta de cena
 
-`SERVER_ENTRY_SCENE` formats two `uint32` values as `%u-%u` and looks the resulting text up in the client's scene registry. The archived `res\\share\\scenes.ini` defines both `Scene` (scene ID) and `Member` (scene-server number).
+`SERVER_ENTRY_SCENE` formata dois valores `uint32` como `%u-%u` e procura o texto resultante no registro de cenas do cliente. O arquivo `res\share\scenes.ini` define tanto `Scene` (ID da cena) quanto `Member` (número do servidor de cena).
 
-## Proven order
+## Ordem comprovada
 
-The `SceneBaseModule::LoadSceneBaseInfo` path opens `share/scenes.ini`, enumerates each numeric section and converts the section name to an integer. It then reads the `Member` value for that same section.
+O caminho `SceneBaseModule::LoadSceneBaseInfo` abre `share/scenes.ini`, percorre cada seção numérica e converte o nome da seção para inteiro. Em seguida, lê o valor `Member` da mesma seção.
 
-Immediately before the scene-add virtual call, the released ARM64 client places:
+Imediatamente antes da chamada virtual que adiciona a cena, o cliente ARM64 coloca:
 
 ```text
-w1 = numeric INI section / Scene ID
-w2 = Member value
+w1 = secao numerica do INI / Scene ID
+w2 = valor Member
 x3 = Script
 x4 = Config
 ```
 
-That scene-add path therefore receives `Scene` first and `Member` second. Elsewhere the client represents the same two-component scene identity as a 64-bit pair whose low 32 bits are formatted first and high 32 bits second with `%u-%u`.
+Portanto, o caminho de adição recebe `Scene` primeiro e `Member` depois.
 
-Combined with `GameReceiver::ServerEntryScene`, which reads its two scene components in packet order and formats them with that same `%u-%u` representation, the runtime lookup key is:
+Em outro ponto, o cliente representa a mesma identidade em um par de 32 bits e formata o primeiro componente seguido do segundo com `%u-%u`.
+
+Combinando isso com `GameReceiver::ServerEntryScene`, a chave de lookup em execução é:
 
 ```text
 Scene-Member
 ```
 
-not `Member-Scene`.
+não `Member-Scene`.
 
-## First controlled scene
+## Primeira cena controlada
 
-The archived registry contains the original MOBA scene:
+O registro arquivado contém o mapa MOBA original:
 
 ```text
 section/Scene = 119
 Member = 0
-Config = ini\\scene\\moba_chiji
+Config = ini\scene\moba_chiji
 Clonable = 1
 BattleWarID = 1
 PreLoad = 1
 ```
 
-Therefore the client-known, preloaded base key for that map is:
+Logo, a chave base pré-carregada conhecida pelo cliente é:
 
 ```text
 119-0
 ```
 
-The compatibility server uses `119` / `0` only as the default **opt-in experiment** for `SERVER_ENTRY_SCENE`; emission remains disabled unless `MEMBER_SEND_ENTRY_SCENE=true`. This keeps static-analysis facts separate from claims about runtime success: reaching the lobby/map still requires a real patched-client test.
+O servidor de compatibilidade usa `119` / `0` apenas como experimento **opt-in** de `SERVER_ENTRY_SCENE`. O envio continua desligado até `MEMBER_SEND_ENTRY_SCENE=true` ou até o perfil `scripts/enable-legacy-flow.sh` ser ativado.
+
+Isso separa o que já foi provado por análise estática do que ainda precisa de confirmação em execução: chegar ao lobby/mapa continua dependendo de um teste real com cliente próprio apontado para a VPS.
