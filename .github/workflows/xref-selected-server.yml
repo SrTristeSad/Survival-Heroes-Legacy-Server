@@ -39,7 +39,9 @@ jobs:
           wanted={
               'server_addr','server_id','server_port','server_district','server_issuer',
               'servername','serverdistrict','serverId','ServerID','player_serverid',
-              'server_recommend','server_recommand'
+              'server_recommend','server_recommand','server_new','server_stop','server_good',
+              'server_normal','server_hot','server_Issuer_list','gsb_server_Issuer_list',
+              'lbl_server_type_def','lbl_server_state_def','server_page','server_page_'
           }
           strings=subprocess.check_output(['strings','-a','-t','x',lib],text=True,errors='replace').splitlines()
           targets={}
@@ -52,14 +54,13 @@ jobs:
           Path('reports/selected-server-literals.txt').write_text('\n'.join(f'0x{k:x}\t{v}' for k,v in sorted(targets.items()))+'\n')
 
           p=subprocess.Popen(['aarch64-linux-gnu-objdump','-d','-C','--no-show-raw-insn',lib],stdout=subprocess.PIPE,text=True,errors='replace',bufsize=1)
-          prev=deque(maxlen=90)
+          prev=deque(maxlen=110)
           regs={}
           captures=[]
           active=[]
           lineno=0
           for line in p.stdout:
               lineno += 1
-              # Append line to active post-hit captures.
               for c in active:
                   c['lines'].append(line.rstrip('\n'))
                   c['remain'] -= 1
@@ -68,7 +69,6 @@ jobs:
                   for c in done:
                       captures.append(c)
                       active.remove(c)
-
               ma=re.search(r'^\s*([0-9a-fA-F]+):\s+adrp\s+(x\d+),\s*([0-9a-fA-F]+)',line)
               if ma:
                   regs[ma.group(2)] = (int(ma.group(3),16), lineno)
@@ -80,7 +80,7 @@ jobs:
                       if va in targets:
                           header=f'===== {targets[va]} target=0x{va:x} pc=0x{int(mb.group(1),16):x} ====='
                           initial=[header] + list(prev) + [line.rstrip('\n')]
-                          active.append({'lines':initial,'remain':120})
+                          active.append({'lines':initial,'remain':160})
               prev.append(line.rstrip('\n'))
           p.wait()
           captures.extend(active)
@@ -95,6 +95,6 @@ jobs:
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: survival-heroes-selected-server-xrefs
+          name: survival-heroes-selected-server-xrefs-v2
           path: reports/
           retention-days: 7
