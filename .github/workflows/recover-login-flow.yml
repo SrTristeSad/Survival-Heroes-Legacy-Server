@@ -1,0 +1,83 @@
+name: Recover legacy member login flow
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/recover-login-flow.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  recover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install tools
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq binutils-aarch64-linux-gnu
+      - name: Download libapp
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euxo pipefail
+          mkdir -p client work/xapk work/apk reports
+          gh release download apk --pattern '*.xapk' --dir client
+          unzip -q "$(find client -type f -name '*.xapk' | head -n1)" -d work/xapk
+          unzip -q "$(find work/xapk -type f -name '*.apk' | head -n1)" 'lib/arm64-v8a/libapp.so' -d work/apk
+      - name: Locate network and login symbols
+        shell: bash
+        run: |
+          LIB=work/apk/lib/arm64-v8a/libapp.so
+          aarch64-linux-gnu-nm -D -n -C "$LIB" > reports/nm.txt || true
+          grep -E 'CNetWork::(ConnectServer|SendData|DisconnectServer)|LenSplitProtocol|FormLogin|Login|Member' reports/nm.txt > reports/login-symbols.txt || true
+          head -n 400 reports/login-symbols.txt
+      - name: Trace calls to ConnectServer and SendData
+        shell: bash
+        run: |
+          LIB=work/apk/lib/arm64-v8a/libapp.so
+          aarch64-linux-gnu-objdump -d -C --no-show-raw-insn "$LIB" > work/full.txt
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          nm=Path('reports/nm.txt').read_text(errors='replace').splitlines()
+          targets={}
+          for line in nm:
+              m=re.match(r'([0-9a-fA-F]+)\s+\w\s+(.*)', line)
+              if not m: continue
+              addr=int(m.group(1),16); name=m.group(2)
+              if 'CNetWork::ConnectServer' in name or 'CNetWork::SendData' in name or 'CNetWork::DisconnectServer' in name:
+                  targets[addr]=name
+          Path('reports/network-targets.txt').write_text('\n'.join(f'0x{a:x}\t{n}' for a,n in sorted(targets.items()))+'\n')
+
+          lines=Path('work/full.txt').read_text(errors='replace').splitlines()
+          out=[]; hits=[]
+          for i,line in enumerate(lines):
+              m=re.search(r'\bbl\s+([0-9a-fA-F]+)\s+', line)
+              if not m: continue
+              dst=int(m.group(1),16)
+              if dst in targets:
+                  hits.append((i,dst,line.strip()))
+                  out.append(f'===== {targets[dst]} CALL: {line.strip()} =====')
+                  out.extend(lines[max(0,i-140):min(len(lines),i+181)])
+                  out.append('')
+          Path('reports/network-callers.txt').write_text('\n'.join(out),encoding='utf-8')
+          Path('reports/network-caller-summary.txt').write_text('\n'.join(f'0x{dst:x}\t{targets[dst]}\t{line}' for _,dst,line in hits)+'\n')
+          print('targets',len(targets),'calls',len(hits))
+          PY
+          cat reports/network-targets.txt
+          head -n 120 reports/network-caller-summary.txt
+      - name: Collect login/member protocol strings
+        run: |
+          LIB=work/apk/lib/arm64-v8a/libapp.so
+          strings -a -t x "$LIB" | grep -Eai 'member|login|logon|account|password|passwd|token|session|connect server|server_addr|server_port|server_id|role|character|gateway|auth|verify|snail|uid|userid' > reports/login-strings.txt || true
+          head -n 500 reports/login-strings.txt
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: survival-heroes-login-flow
+          path: reports/
+          retention-days: 7
