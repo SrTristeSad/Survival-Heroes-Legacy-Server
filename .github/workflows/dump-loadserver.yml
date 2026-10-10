@@ -1,3 +1,4 @@
+# Resolve every literal referenced by the original FormLoginServers::LoadServerList flow.
 name: Dump complete LoadServerList flow
 
 on:
