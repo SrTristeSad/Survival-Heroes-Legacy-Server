@@ -6,6 +6,30 @@ import (
 	"testing"
 )
 
+func TestRecoveredHandshakeOpcodes(t *testing.T) {
+	if ClientGetVerifyOpcode != 0x00 || ClientRetEncodeOpcode != 0x01 || ClientLoginOpcode != 0x02 {
+		t.Fatalf("unexpected client opcodes get_verify=%02x ret_encode=%02x login=%02x", ClientGetVerifyOpcode, ClientRetEncodeOpcode, ClientLoginOpcode)
+	}
+	if ServerSetVerifyOpcode != 0x01 || ServerSetEncodeOpcode != 0x02 || ServerLoginSuccessOpcode != 0x04 {
+		t.Fatalf("unexpected server opcodes set_verify=%02x set_encode=%02x login_success=%02x", ServerSetVerifyOpcode, ServerSetEncodeOpcode, ServerLoginSuccessOpcode)
+	}
+	if ServerSetEncodeMinSize != 62 {
+		t.Fatalf("unexpected SERVER_SET_ENCODE minimum size %d", ServerSetEncodeMinSize)
+	}
+
+	payload := BuildClientGetVerify()
+	if len(payload) != 1 || payload[0] != ClientGetVerifyOpcode {
+		t.Fatalf("GET_VERIFY payload=%x", payload)
+	}
+	frame, err := FrameWirePayload(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := binary.LittleEndian.Uint32(frame[:4]); got != 1 || len(frame) != 5 || frame[4] != 0 {
+		t.Fatalf("GET_VERIFY frame=%x", frame)
+	}
+}
+
 func TestWireFrameRoundTrip(t *testing.T) {
 	payload := []byte{0x04, 1, 2, 3, 4}
 	frame, err := FrameWirePayload(payload)
