@@ -80,9 +80,6 @@ jobs:
           PY
       - name: Provar funcao que fornece o caminho base
         run: |
-          # A rotina que concatena server_query.ini chama 0x9573b4 para obter
-          # uma std::string base. Estes dumps pequenos permitem identificar se
-          # ela resolve para writable/persistent/external storage.
           aarch64-linux-gnu-objdump -d -C --no-show-raw-insn \
             --start-address=0x956f00 --stop-address=0x958200 work/libapp.so \
             > reports/path-provider-disasm.txt || true
@@ -94,6 +91,15 @@ jobs:
             > reports/path-provider-symbols.txt || true
           grep -E 'getWritablePath|getPersistentStoragePath|getExternalStoragePath|fullPathForFilename|addSearchPath|setSearchPaths' work/nm.txt \
             > reports/storage-api-addresses.txt || true
+      - name: Identificar singleton por relocacoes ELF
+        run: |
+          aarch64-linux-gnu-readelf -rW work/libapp.so > work/relocs.txt || true
+          grep -Ei '02be1d40|02bd9a48|Application|FileUtils|AssetsManager|PackageSystem|GameOption|Storage|Writable|External' work/relocs.txt \
+            > reports/relocacoes-caminho.txt || true
+          # Tambem tenta localizar simbolos/objetos globais proximos aos GOTs usados.
+          aarch64-linux-gnu-nm -D -n -C work/libapp.so | \
+            grep -E 'Singleton|ApplicationKit::Application|FileUtils|AssetsManager|PackageSystem|GameOption' \
+            > reports/singletons-candidatos.txt || true
       - uses: actions/upload-artifact@v4
         with:
           name: analise-server-txt
