@@ -92,6 +92,18 @@ func BuildServerSetVerify(v SetVerifyPacket) ([]byte, error) {
 	return out, nil
 }
 
+// BuildServerSetEncode constructs the smallest opcode-0x02 packet accepted by
+// GameReceiver::ServerSetEncode. ARM64 analysis of the 3.3.3 client shows that
+// the receiver only checks payload length > 61 and does not consume any bytes
+// after the opcode before invoking its on_set_encode callback. The remaining
+// bytes are therefore deliberately zero while the higher-level handshake is
+// validated against a tester-owned client.
+func BuildServerSetEncode() []byte {
+	out := make([]byte, ServerSetEncodeMinSize)
+	out[0] = ServerSetEncodeOpcode
+	return out
+}
+
 // LoginSuccessHeader models only the 41-byte fixed prefix consumed before the
 // role list. The meanings of Values[0..8] are deliberately not guessed.
 // Values[9] is the role count at offset +37.
