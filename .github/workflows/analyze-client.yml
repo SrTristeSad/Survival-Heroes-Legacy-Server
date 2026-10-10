@@ -1,3 +1,4 @@
+# Static triage of the archived 3.3.3 client.
 name: Analyze Survival Heroes client
 
 on:
