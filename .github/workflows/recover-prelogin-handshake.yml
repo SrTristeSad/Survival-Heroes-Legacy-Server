@@ -1,5 +1,6 @@
 name: Recover pre-login GameSock handshake
 
+# Trace the connection-success path that precedes CLIENT_LOGIN.
 on:
   push:
     branches: [main]
@@ -40,8 +41,6 @@ jobs:
           import re
           lines=Path('reports/prelogin.txt').read_text(errors='replace').splitlines()
           out=[]
-          # Find writes of constant 1 into byte-sized packet locations, then
-          # retain broad context so calls through the socket vtable are visible.
           for i,line in enumerate(lines):
               ms=re.search(r'\bstrb\s+w(\d+),\s*\[',line)
               mst=re.search(r'\bsturb\s+w(\d+),\s*\[',line)
