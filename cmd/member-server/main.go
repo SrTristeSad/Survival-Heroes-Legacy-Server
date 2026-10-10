@@ -16,7 +16,11 @@ import (
 	"github.com/SrTristeSad/survival-heroes-legacy-server/internal/legacylogin"
 )
 
-const maxMemberWirePayload = 64 * 1024
+const (
+	maxMemberWirePayload = 64 * 1024
+	memberIdleTimeout    = 5 * time.Minute
+	maxObservedFrames    = 64
+)
 
 type loginReadResult struct {
 	Meta      legacylogin.LoginMetadata
@@ -28,6 +32,9 @@ type verifyReplyConfig struct {
 	Enabled          bool
 	SendSetEncode    bool
 	SendLoginSuccess bool
+	SendWorldInfo    bool
+	WorldInfoField0  uint16
+	WorldInfoText    string
 	Packet           legacylogin.SetVerifyPacket
 }
 
@@ -56,11 +63,31 @@ func envUint32(name string, fallback uint32) (uint32, error) {
 	return uint32(v), nil
 }
 
+func envUint16(name string, fallback uint16) (uint16, error) {
+	v, err := envUint32(name, uint32(fallback))
+	if err != nil {
+		return 0, err
+	}
+	if v > 0xffff {
+		return 0, fmt.Errorf("%s=%d exceeds uint16", name, v)
+	}
+	return uint16(v), nil
+}
+
 func loadVerifyReplyConfig() (verifyReplyConfig, error) {
 	var cfg verifyReplyConfig
 	cfg.Enabled = envBool("MEMBER_SEND_SET_VERIFY", false)
 	cfg.SendSetEncode = envBool("MEMBER_SEND_SET_ENCODE", false)
 	cfg.SendLoginSuccess = envBool("MEMBER_SEND_LOGIN_SUCCESS", false)
+	cfg.SendWorldInfo = envBool("MEMBER_SEND_WORLD_INFO", false)
+	cfg.WorldInfoText = os.Getenv("MEMBER_WORLD_INFO_TEXT")
+
+	worldField, err := envUint16("MEMBER_WORLD_INFO_FIELD0", 0)
+	if err != nil {
+		return cfg, err
+	}
+	cfg.WorldInfoField0 = worldField
+
 	if !cfg.Enabled {
 		return cfg, nil
 	}
@@ -231,16 +258,29 @@ func sendZeroRoleLoginSuccess(conn net.Conn, remote string) error {
 	return nil
 }
 
+func sendWorldInfo(conn net.Conn, remote string, cfg verifyReplyConfig) error {
+	payload := legacylogin.BuildServerWorldInfo(cfg.WorldInfoField0, cfg.WorldInfoText)
+	wireBytes, err := writeFramedPayload(conn, payload)
+	if err != nil {
+		return err
+	}
+	log.Printf(
+		"member %s: sent experimental SERVER_WORLD_INFO field0=%d text_runes=%d payload_bytes=%d wire_bytes=%d",
+		remote, cfg.WorldInfoField0, len([]rune(cfg.WorldInfoText)), len(payload), wireBytes,
+	)
+	return nil
+}
+
 func handle(conn net.Conn, verifyCfg verifyReplyConfig) {
 	remote := conn.RemoteAddr().String()
 	defer conn.Close()
-	_ = conn.SetDeadline(time.Now().Add(15 * time.Second))
 
-	for frameNo := 1; frameNo <= 8; frameNo++ {
+	for frameNo := 1; frameNo <= maxObservedFrames; frameNo++ {
+		_ = conn.SetDeadline(time.Now().Add(memberIdleTimeout))
 		payload, wireBytes, err := readMemberFrame(conn)
 		if err != nil {
 			if ne, ok := err.(net.Error); ok && ne.Timeout() {
-				log.Printf("member %s: handshake idle after %d frame(s)", remote, frameNo-1)
+				log.Printf("member %s: session idle after %d frame(s)", remote, frameNo-1)
 				return
 			}
 			if errors.Is(err, io.EOF) {
@@ -296,14 +336,40 @@ func handle(conn net.Conn, verifyCfg verifyReplyConfig) {
 				}
 			}
 
+		case legacylogin.ClientWorldInfoOpcode:
+			meta, parseErr := legacylogin.InspectClientWorldInfo(payload)
+			if parseErr != nil {
+				log.Printf("member %s: CLIENT_WORLD_INFO validation failed: %v", remote, parseErr)
+				return
+			}
+			log.Printf(
+				"member %s: CLIENT_WORLD_INFO wire_bytes=%d field0=%d text_utf32_units=%d payload_bytes=%d",
+				remote, wireBytes, meta.Field0, meta.TextUTF32Units, meta.PayloadBytes,
+			)
+			if verifyCfg.SendWorldInfo {
+				if err := sendWorldInfo(conn, remote, verifyCfg); err != nil {
+					log.Printf("member %s: SERVER_WORLD_INFO write failed: %v", remote, err)
+					return
+				}
+			}
+
+		case legacylogin.ClientChooseRoleOpcode:
+			meta, parseErr := legacylogin.InspectChooseRole(payload)
+			if parseErr != nil {
+				log.Printf("member %s: CLIENT_CHOOSE_ROLE validation failed: %v", remote, parseErr)
+				return
+			}
+			log.Printf(
+				"member %s: CLIENT_CHOOSE_ROLE wire_bytes=%d role_utf16_units=%d scene_info_bytes=%d payload_bytes=%d",
+				remote, wireBytes, meta.RoleUTF16Units, meta.SceneInfoBytes, meta.PayloadBytes,
+			)
+
 		case legacylogin.ClientCreateRoleOpcode:
 			meta, parseErr := legacylogin.InspectCreateRoleRequest(payload)
 			if parseErr != nil {
 				log.Printf("member %s: CLIENT_CREATE_ROLE validation failed: %v", remote, parseErr)
 				return
 			}
-			// Do not log the requested character name itself; its structural
-			// length is sufficient for interoperability research.
 			log.Printf(
 				"member %s: CLIENT_CREATE_ROLE wire_bytes=%d field0=%d name_utf16_units=%d extra_params=%d payload_bytes=%d",
 				remote, wireBytes, meta.Field0, meta.NameUTF16Units, meta.ExtraParamCount, meta.PayloadBytes,
@@ -313,6 +379,7 @@ func handle(conn net.Conn, verifyCfg verifyReplyConfig) {
 			log.Printf("member %s: unknown client opcode=0x%02x payload_size=%d", remote, payload[0], len(payload))
 		}
 	}
+	log.Printf("member %s: observation frame limit reached (%d)", remote, maxObservedFrames)
 }
 
 func main() {
@@ -329,7 +396,10 @@ func main() {
 		log.Fatal(err)
 	}
 	defer ln.Close()
-	log.Printf("legacy member/login compatibility server listening on %s (experimental_set_verify=%t set_encode=%t login_success=%t mode=%d field0=%d)", addr, verifyCfg.Enabled, verifyCfg.SendSetEncode, verifyCfg.SendLoginSuccess, verifyCfg.Packet.Mode, verifyCfg.Packet.Field0)
+	log.Printf(
+		"legacy member/login compatibility server listening on %s (set_verify=%t set_encode=%t login_success=%t world_info=%t mode=%d field0=%d)",
+		addr, verifyCfg.Enabled, verifyCfg.SendSetEncode, verifyCfg.SendLoginSuccess, verifyCfg.SendWorldInfo, verifyCfg.Packet.Mode, verifyCfg.Packet.Field0,
+	)
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
