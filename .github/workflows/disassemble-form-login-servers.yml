@@ -1,0 +1,70 @@
+name: Inspect FormLoginServers server list
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/disassemble-form-login-servers.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install tools
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq binutils-aarch64-linux-gnu
+      - name: Download client library
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euxo pipefail
+          mkdir -p client work/xapk work/apk reports
+          gh release download apk --pattern '*.xapk' --dir client
+          unzip -q "$(find client -type f -name '*.xapk' | head -n1)" -d work/xapk
+          unzip -q "$(find work/xapk -type f -name '*.apk' | head -n1)" 'lib/arm64-v8a/libapp.so' -d work/apk
+      - name: Find FormLoginServers symbols
+        run: |
+          LIB=work/apk/lib/arm64-v8a/libapp.so
+          aarch64-linux-gnu-nm -D -C "$LIB" | grep -E 'FormLoginServers|LoginServers' | sort > reports/form-login-symbols.txt || true
+          strings -a -t x "$LIB" | grep -Eai 'server_(name|addr|port|id|state|type|page|recommend|issuer)|FormLoginServers|server_list_roles|server_list.ini|server_stop|server_good|server_normal|server_hot|server_new' \
+            > reports/form-login-strings.txt || true
+          cat reports/form-login-symbols.txt
+      - name: Disassemble relevant exported ranges
+        shell: bash
+        run: |
+          LIB=work/apk/lib/arm64-v8a/libapp.so
+          python3 - <<'PY' > reports/form-login-ranges.txt
+          import re, pathlib
+          text = pathlib.Path('reports/form-login-symbols.txt').read_text(errors='replace').splitlines()
+          rows=[]
+          for line in text:
+              m=re.match(r'([0-9a-fA-F]+)\s+\w\s+(.*)', line)
+              if m:
+                  rows.append((int(m.group(1),16),m.group(2)))
+          rows.sort()
+          for i,(addr,name) in enumerate(rows):
+              end=rows[i+1][0] if i+1<len(rows) else addr+0x2000
+              if end-addr>0x6000: end=addr+0x6000
+              print(f'{addr:x} {end:x} {name}')
+          PY
+          : > reports/form-login-disassembly.txt
+          while read start stop name; do
+            echo "===== $name @0x$start =====" >> reports/form-login-disassembly.txt
+            aarch64-linux-gnu-objdump -d -C --no-show-raw-insn --start-address="0x$start" --stop-address="0x$stop" "$LIB" \
+              >> reports/form-login-disassembly.txt || true
+          done < reports/form-login-ranges.txt
+      - name: Dump nearby login-server rodata
+        run: |
+          LIB=work/apk/lib/arm64-v8a/libapp.so
+          aarch64-linux-gnu-objdump -s -j .rodata --start-address=0x24b3000 --stop-address=0x24b3600 "$LIB" > reports/form-login-rodata.txt || true
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: survival-heroes-form-login-servers
+          path: reports/
+          retention-days: 7
