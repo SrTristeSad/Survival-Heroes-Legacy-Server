@@ -13,6 +13,6 @@ O cliente não depende apenas de `assets/config.ini`. O código ARM64 possui uma
 
 Isso é promissor porque `server_query.ini` tem 16 caracteres e pode ser substituído no binário por `server.txt` sem aumentar o tamanho da string original.
 
-A análise seguinte identifica exatamente qual singleton fornece o caminho-base e se ele corresponde a armazenamento gravável/externo. Só depois disso o patch será promovido para o gerador do cliente.
+A primeira passagem também confirmou que o caminho-base vem de um objeto estático alcançado por uma relocação ELF. A passagem final segue a relocação do próprio objeto para identificar sua vtable/tipo e decidir onde o arquivo editável deve ser criado.
 
 Nenhum arquivo proprietário do jogo é incluído no repositório.
