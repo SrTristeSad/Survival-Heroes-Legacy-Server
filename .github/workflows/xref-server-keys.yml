@@ -1,0 +1,88 @@
+name: Cross-reference server-list keys
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/xref-server-keys.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  xref:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install AArch64 tools
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq binutils-aarch64-linux-gnu
+      - name: Download libapp
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euxo pipefail
+          mkdir -p client work/xapk work/apk reports
+          gh release download apk --pattern '*.xapk' --dir client
+          unzip -q "$(find client -type f -name '*.xapk' | head -n1)" -d work/xapk
+          unzip -q "$(find work/xapk -type f -name '*.apk' | head -n1)" 'lib/arm64-v8a/libapp.so' -d work/apk
+      - name: Build disassembly and find key xrefs
+        shell: bash
+        run: |
+          set -euxo pipefail
+          LIB=work/apk/lib/arm64-v8a/libapp.so
+          aarch64-linux-gnu-objdump -d -C --no-show-raw-insn "$LIB" > work/full-dis.txt
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          lines=Path('work/full-dis.txt').read_text(errors='replace').splitlines()
+          targets={
+            'server_id': (0x24b2000,0xc38),
+            'server_port': (0x24b2000,0xc48),
+            'server_district': (0x24b2000,0xc58),
+            'server_issuer': (0x24b2000,0xc68),
+            'server_recommend': (0x24b3000,0x240),
+            'server_page': (0x24b3000,0x360),
+            'server_name_fmt': (0x24b3000,0x410),
+            'load_server_list_log': (0x24b3000,0x468),
+          }
+
+          # objdump ADRP prints resolved page address in the comment/operand. Find
+          # ADD-immediate offsets and require a matching ADRP to the target page
+          # within the previous 12 instructions using the same register.
+          out=[]
+          for name,(page,off) in targets.items():
+            out.append(f'===== {name} target=0x{page+off:x} =====')
+            matches=0
+            for i,line in enumerate(lines):
+              m=re.search(r'\badd\s+(x\d+),\s*\1,\s*#0x([0-9a-f]+)',line)
+              if not m or int(m.group(2),16)!=off:
+                continue
+              reg=m.group(1)
+              ok=False
+              for j in range(max(0,i-14),i):
+                if re.search(rf'\badrp\s+{re.escape(reg)},\s*{page:x}\b',lines[j]):
+                  ok=True
+                  break
+              if not ok:
+                continue
+              matches+=1
+              lo=max(0,i-28); hi=min(len(lines),i+55)
+              out.append(f'--- match {matches} at line {i+1} ---')
+              out.extend(lines[lo:hi])
+            out.append(f'matches={matches}')
+          Path('reports/server-key-xrefs.txt').write_text('\n'.join(out),encoding='utf-8')
+          PY
+          sed -n '1,500p' reports/server-key-xrefs.txt
+      - name: Also find INI read functions near candidate xrefs
+        run: |
+          LIB=work/apk/lib/arm64-v8a/libapp.so
+          aarch64-linux-gnu-nm -D -C "$LIB" | grep -E 'IniFile.*Read|Read(Integer|String)|TIniFile|CIniFile' | sort > reports/ini-symbols.txt || true
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: survival-heroes-server-key-xrefs
+          path: reports/
+          retention-days: 7
