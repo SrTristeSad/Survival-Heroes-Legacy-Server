@@ -1,0 +1,65 @@
+name: Dump complete LoadServerList flow
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/dump-loadserver.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  dump:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install tools
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq binutils-aarch64-linux-gnu
+      - name: Download libapp
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euxo pipefail
+          mkdir -p client work/xapk work/apk reports
+          gh release download apk --pattern '*.xapk' --dir client
+          unzip -q "$(find client -type f -name '*.xapk' | head -n1)" -d work/xapk
+          unzip -q "$(find work/xapk -type f -name '*.apk' | head -n1)" 'lib/arm64-v8a/libapp.so' -d work/apk
+      - name: Dump and resolve every literal reference
+        shell: bash
+        run: |
+          LIB=work/apk/lib/arm64-v8a/libapp.so
+          aarch64-linux-gnu-objdump -d -C --no-show-raw-insn --start-address=0xa57000 --stop-address=0xa58400 "$LIB" > reports/loadserver-disassembly.txt
+          strings -a -t x "$LIB" > work/strings.txt
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          smap={}
+          for line in Path('work/strings.txt').read_text(errors='replace').splitlines():
+              m=re.match(r'\s*([0-9a-fA-F]+)\s+(.*)',line)
+              if m: smap[int(m.group(1),16)] = m.group(2)
+          lines=Path('reports/loadserver-disassembly.txt').read_text(errors='replace').splitlines()
+          regs={}
+          out=[]
+          for i,line in enumerate(lines):
+              m=re.search(r'^\s*([0-9a-f]+):\s+adrp\s+(x\d+),\s*([0-9a-f]+)',line)
+              if m:
+                  regs[m.group(2)] = (int(m.group(3),16),i)
+              m=re.search(r'^\s*([0-9a-f]+):\s+add\s+(x\d+),\s*(x\d+),\s*#0x([0-9a-f]+)',line)
+              if m and m.group(2)==m.group(3) and m.group(2) in regs:
+                  page,seen=regs[m.group(2)]
+                  if i-seen <= 24:
+                      addr=page+int(m.group(4),16)
+                      if addr in smap:
+                          out.append(f'0x{m.group(1)}\t0x{addr:x}\t{smap[addr]}')
+          Path('reports/loadserver-resolved-strings.txt').write_text('\n'.join(out)+'\n',encoding='utf-8')
+          PY
+          cat reports/loadserver-resolved-strings.txt
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: survival-heroes-loadserver-full
+          path: reports/
+          retention-days: 7
