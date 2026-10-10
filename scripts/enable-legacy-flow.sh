@@ -40,19 +40,19 @@ p.write_text('\n'.join(out) + '\n', encoding='utf-8')
 PY
 
 cat <<'EOF'
-Recovered 3.3.3 compatibility experiment enabled.
+Fluxo de compatibilidade recuperado do cliente 3.3.3 ativado.
 
-Flow enabled:
+Fluxo habilitado:
   GET_VERIFY -> SET_VERIFY
   RET_ENCODE -> SET_ENCODE
-  LOGIN -> LOGIN_SUCCESS (zero roles)
+  LOGIN -> LOGIN_SUCCESS (zero personagens)
   WORLD_INFO -> WORLD_INFO
-  CHOOSE_ROLE -> empty PROPERTY/RECORD tables -> ENTRY_SCENE 119-0
+  CHOOSE_ROLE -> tabelas PROPERTY/RECORD vazias -> ENTRY_SCENE 119-0
 
-This is a protocol-research profile for a tester-owned patched client. It does
-not claim that the original lobby/map has been reached until verified live.
+Este e um perfil experimental de pesquisa de protocolo para um cliente modificado
+que voce possui. A entrada no lobby/mapa ainda precisa ser confirmada no teste real.
 
-Next:
+Proximo passo:
   sh scripts/setup.sh
   docker compose logs -f query member
 EOF
