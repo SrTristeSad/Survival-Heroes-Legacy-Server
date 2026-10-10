@@ -1,5 +1,6 @@
 name: Recover legacy member wire framing
 
+# Focused analysis of framing and old member/login messages.
 on:
   push:
     branches: [main]
