@@ -1,0 +1,125 @@
+name: Analyze Survival Heroes client
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/analyze-client.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download release client
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euxo pipefail
+          mkdir -p client analysis
+          gh release download apk --pattern '*.xapk' --dir client
+          ls -lah client | tee analysis/client-files.txt
+          sha256sum client/* | tee analysis/sha256.txt
+
+      - name: Inspect XAPK and APK contents
+        run: |
+          set -euxo pipefail
+          XAPK="$(find client -maxdepth 1 -type f -name '*.xapk' | head -n1)"
+          unzip -l "$XAPK" > analysis/xapk-list.txt
+          mkdir -p work/xapk
+          unzip -q "$XAPK" -d work/xapk
+          {
+            echo '# Top-level XAPK contents'
+            find work/xapk -maxdepth 4 -type f -printf '%p\t%s bytes\n' | sort
+          } > analysis/xapk-structure.txt
+
+          mkdir -p work/apks
+          i=0
+          while IFS= read -r -d '' apk; do
+            i=$((i+1))
+            out="work/apks/apk$i"
+            mkdir -p "$out"
+            unzip -q "$apk" -d "$out" || true
+            echo "===== APK $i: $apk =====" >> analysis/apk-files.txt
+            unzip -l "$apk" >> analysis/apk-files.txt || true
+          done < <(find work/xapk -type f -name '*.apk' -print0)
+
+          {
+            echo '# Engine / runtime indicators'
+            find work -type f \( -name 'libunity.so' -o -name 'libil2cpp.so' -o -name 'global-metadata.dat' -o -name 'Assembly-CSharp.dll' -o -name 'UnityPlayerActivity*' \) -print
+            echo
+            echo '# Native libraries'
+            find work/apks -type f -path '*/lib/*/*.so' -print | sort
+            echo
+            echo '# DEX files'
+            find work/apks -type f -name 'classes*.dex' -print | sort
+          } > analysis/runtime.txt
+
+          {
+            echo '# OBB / large payloads'
+            find work/xapk -type f \( -name '*.obb' -o -size +100M \) -printf '%p\t%s bytes\n' | sort
+          } > analysis/obb-files.txt
+
+          while IFS= read -r -d '' obb; do
+            echo "===== $obb =====" >> analysis/obb-list.txt
+            unzip -l "$obb" >> analysis/obb-list.txt 2>&1 || file "$obb" >> analysis/obb-list.txt
+          done < <(find work/xapk -type f -name '*.obb' -print0)
+
+      - name: Scan network and protocol strings
+        shell: bash
+        run: |
+          set -euxo pipefail
+          : > analysis/all-interesting-strings.txt
+          : > analysis/network-candidates.txt
+          : > analysis/protocol-keywords.txt
+
+          scan_file() {
+            local f="$1"
+            echo "===== $f =====" >> analysis/all-interesting-strings.txt
+            strings -a -n 6 "$f" 2>/dev/null | \
+              grep -Eai 'https?://|wss?://|[A-Za-z0-9.-]+\.(com|net|org|io|cn|game|games|cloud|app)|login|auth|gateway|server|socket|websocket|protobuf|proto|match|battle|room|lobby|host|port|udp|tcp|snail|survival|config|api' \
+              | head -n 2500 >> analysis/all-interesting-strings.txt || true
+          }
+
+          while IFS= read -r -d '' f; do
+            scan_file "$f"
+          done < <(find work/apks -type f \( -name '*.dex' -o -name '*.so' -o -name '*.json' -o -name '*.xml' -o -name '*.txt' -o -name '*.bytes' -o -name '*.dat' -o -name '*.dll' \) -size -150M -print0)
+
+          grep -Eaio 'https?://[^[:space:]"<>]+' analysis/all-interesting-strings.txt | sed 's/[),;]$//' | sort -u > analysis/network-candidates.txt || true
+          grep -Eaio 'wss?://[^[:space:]"<>]+' analysis/all-interesting-strings.txt | sed 's/[),;]$//' | sort -u >> analysis/network-candidates.txt || true
+          grep -Eaio '([A-Za-z0-9_-]+\.)+[A-Za-z]{2,24}' analysis/all-interesting-strings.txt | sort -u >> analysis/network-candidates.txt || true
+          sort -u -o analysis/network-candidates.txt analysis/network-candidates.txt
+
+          grep -Eai 'login|auth|gateway|server|socket|websocket|protobuf|proto|match|battle|room|lobby|host|port|udp|tcp|snail|survival|config|api' analysis/all-interesting-strings.txt | sort -u | head -n 5000 > analysis/protocol-keywords.txt || true
+
+      - name: Build summary
+        run: |
+          {
+            echo '# Survival Heroes 3.3.3 static triage'
+            echo
+            echo '## Client hash'
+            cat analysis/sha256.txt
+            echo
+            echo '## Runtime indicators'
+            sed -n '1,200p' analysis/runtime.txt
+            echo
+            echo '## Network candidates (first 250)'
+            sed -n '1,250p' analysis/network-candidates.txt
+            echo
+            echo '## OBB / payloads'
+            cat analysis/obb-files.txt
+          } > analysis/REPORT.md
+
+      - name: Upload analysis artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: survival-heroes-3.3.3-analysis
+          path: analysis/
+          retention-days: 7
