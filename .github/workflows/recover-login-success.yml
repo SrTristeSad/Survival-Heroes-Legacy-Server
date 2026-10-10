@@ -1,0 +1,108 @@
+name: Recover login success role layout
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/recover-login-success.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  recover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install tools
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq binutils-aarch64-linux-gnu
+      - name: Download libapp
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euxo pipefail
+          mkdir -p client work/xapk work/apk reports
+          gh release download apk --pattern '*.xapk' --dir client
+          unzip -q "$(find client -type f -name '*.xapk' | head -n1)" -d work/xapk
+          unzip -q "$(find work/xapk -type f -name '*.apk' | head -n1)" 'lib/arm64-v8a/libapp.so' -d work/apk
+          cp work/apk/lib/arm64-v8a/libapp.so work/libapp.so
+      - name: Inventory login success strings and symbols
+        run: |
+          aarch64-linux-gnu-nm -D -n -C work/libapp.so > work/nm.txt || true
+          aarch64-linux-gnu-readelf -SW work/libapp.so > reports/sections.txt
+          strings -a -t x work/libapp.so > work/strings.txt
+          grep -Eai 'ServerLoginSucceed|SERVER_LOGIN_SUCCEED|on_login_succeed|role parameter type error|create role|select role|role list|role_' work/strings.txt > reports/login-success-strings.txt || true
+          grep -Eai 'ServerLoginSucceed|LoginSucceed|Role|CreateRole|SelectRole' work/nm.txt > reports/login-success-symbols.txt || true
+      - name: Recover xrefs and function windows
+        run: |
+          aarch64-linux-gnu-objdump -d -C --no-show-raw-insn work/libapp.so > work/disasm.txt
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          sections=[]
+          for line in Path('reports/sections.txt').read_text(errors='replace').splitlines():
+              m=re.match(r'\s*\[\s*\d+\]\s+(\S+)\s+\S+\s+([0-9a-fA-F]+)\s+([0-9a-fA-F]+)\s+([0-9a-fA-F]+)', line)
+              if m:
+                  name,addr,off,size=m.groups(); sections.append((name,int(addr,16),int(off,16),int(size,16)))
+
+          targets=[]
+          for line in Path('reports/login-success-strings.txt').read_text(errors='replace').splitlines():
+              m=re.match(r'\s*([0-9a-fA-F]+)\s+(.*)', line)
+              if not m: continue
+              foff=int(m.group(1),16); text=m.group(2)
+              va=None
+              for name,addr,off,size in sections:
+                  if off <= foff < off+size:
+                      va=addr+(foff-off); break
+              if va is not None: targets.append((va,text,foff))
+
+          lines=Path('work/disasm.txt').read_text(errors='replace').splitlines()
+          ins=[]
+          for i,line in enumerate(lines):
+              m=re.match(r'\s*([0-9a-fA-F]+):', line)
+              if m: ins.append((int(m.group(1),16),i,line))
+
+          by_page={}
+          for i,line in enumerate(lines):
+              m=re.search(r'adrp\s+(x\d+),\s*([0-9a-fA-F]+)',line)
+              if m: by_page.setdefault(int(m.group(2),16),[]).append((i,m.group(1)))
+
+          out=[]; xaddrs=[]
+          for va,text,foff in targets:
+              page=va & ~0xfff; loff=va & 0xfff
+              for i,reg in by_page.get(page,[]):
+                  for j in range(i+1,min(i+10,len(lines))):
+                      pat=rf'add\s+{reg},\s*{reg},\s*#0x([0-9a-fA-F]+)'
+                      mm=re.search(pat,lines[j])
+                      if mm and int(mm.group(1),16)==loff:
+                          am=re.match(r'\s*([0-9a-fA-F]+):',lines[i])
+                          if am:
+                              a=int(am.group(1),16); xaddrs.append(a)
+                              out.append(f'===== XREF 0x{a:x} -> string VA 0x{va:x} file 0x{foff:x}: {text} =====')
+                              out.extend(lines[max(0,i-90):min(len(lines),j+220)])
+                          break
+          Path('reports/login-success-xrefs.txt').write_text('\n'.join(out),encoding='utf-8')
+
+          # Also dump larger windows around unique xrefs so loops parsing role records are visible.
+          wins=[]
+          for addr in sorted(set(xaddrs))[:80]:
+              start=max(0,addr-0x1200); stop=addr+0x3000
+              wins.append(f'XREF_WINDOW 0x{addr:x} start=0x{start:x} stop=0x{stop:x}')
+          Path('reports/xref-windows.txt').write_text('\n'.join(wins),encoding='utf-8')
+          PY
+          while read -r line; do
+            start=$(echo "$line" | sed -n 's/.*start=0x\([0-9a-fA-F]*\).*/\1/p')
+            stop=$(echo "$line" | sed -n 's/.*stop=0x\([0-9a-fA-F]*\).*/\1/p')
+            [ -n "$start" ] || continue
+            echo "===== $line =====" >> reports/login-success-function-windows.txt
+            aarch64-linux-gnu-objdump -d -C --no-show-raw-insn --start-address=0x$start --stop-address=0x$stop work/libapp.so >> reports/login-success-function-windows.txt || true
+          done < reports/xref-windows.txt
+      - name: Upload report
+        uses: actions/upload-artifact@v4
+        with:
+          name: survival-heroes-login-success-role
+          path: reports/
+          retention-days: 7
