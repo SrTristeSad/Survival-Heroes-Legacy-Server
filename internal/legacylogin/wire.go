@@ -9,12 +9,21 @@ const (
 	// LenSplitProtocol::m_nProtocolSize is 4 in the archived 3.3.3 client.
 	WireHeaderSize = 4
 
+	// Client opcodes are zero-based. The archived enum/string table starts with
+	// GET_VERIFY, RET_ENCODE, LOGIN, and the native senders independently confirm
+	// a one-byte 0x00 GET_VERIFY packet and the already-recovered 0x02 LOGIN.
+	ClientGetVerifyOpcode = byte(0x00)
+	ClientRetEncodeOpcode = byte(0x01)
+	ClientLoginOpcode     = byte(0x02)
+
 	// Exact GameReceiver dispatch opcodes recovered from the client jump table.
 	ServerSetVerifyOpcode    = byte(0x01)
+	ServerSetEncodeOpcode    = byte(0x02)
 	ServerLoginSuccessOpcode = byte(0x04)
 
 	ServerSetVerifyBaseSize = 13
 	ServerSetVerifyKeySize  = 16
+	ServerSetEncodeMinSize  = 62
 	ServerLoginSuccessSize  = 41
 )
 
@@ -43,6 +52,14 @@ func ParseWireFrame(data []byte) (payload []byte, consumed int, err error) {
 		return nil, 0, ErrNeedMore
 	}
 	return data[WireHeaderSize:int(total)], int(total), nil
+}
+
+// BuildClientGetVerify returns the exact raw one-byte payload emitted by the
+// original client's pre-login GameSender method. It is useful in protocol
+// tests and packet-capture comparisons; the compatibility server never sends
+// this client-to-server packet itself.
+func BuildClientGetVerify() []byte {
+	return []byte{ClientGetVerifyOpcode}
 }
 
 // SetVerifyPacket is the exact fixed portion consumed by
