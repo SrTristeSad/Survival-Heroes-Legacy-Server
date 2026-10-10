@@ -1,0 +1,72 @@
+name: Disassemble Survival Heroes network routines
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/disassemble-network.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  disassemble:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install AArch64 binutils
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq binutils-aarch64-linux-gnu
+
+      - name: Download and unpack libapp
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euxo pipefail
+          mkdir -p client work/xapk work/apk reports
+          gh release download apk --pattern '*.xapk' --dir client
+          XAPK="$(find client -type f -name '*.xapk' | head -n1)"
+          unzip -q "$XAPK" -d work/xapk
+          APK="$(find work/xapk -type f -name '*.apk' | head -n1)"
+          unzip -q "$APK" 'lib/arm64-v8a/libapp.so' -d work/apk
+          LIB=work/apk/lib/arm64-v8a/libapp.so
+          sha256sum "$LIB" > reports/libapp-sha256.txt
+          file "$LIB" > reports/libapp-file.txt
+          aarch64-linux-gnu-nm -D -C "$LIB" | grep -E 'LenSplitProtocol::|CQueryServerStateInfo::|CPackageHeadSocket::' > reports/target-symbols.txt || true
+
+      - name: Disassemble LenSplitProtocol
+        run: |
+          LIB=work/apk/lib/arm64-v8a/libapp.so
+          aarch64-linux-gnu-objdump -d -C --no-show-raw-insn \
+            --start-address=0x1e9d9d4 --stop-address=0x1e9e2b0 "$LIB" \
+            > reports/lensplit-disassembly.txt
+
+      - name: Disassemble server-query wrapper
+        run: |
+          LIB=work/apk/lib/arm64-v8a/libapp.so
+          aarch64-linux-gnu-objdump -d -C --no-show-raw-insn \
+            --start-address=0x1e9e4c0 --stop-address=0x1e9ebc0 "$LIB" \
+            > reports/query-server-disassembly.txt
+
+      - name: Disassemble package-head socket
+        run: |
+          LIB=work/apk/lib/arm64-v8a/libapp.so
+          aarch64-linux-gnu-objdump -d -C --no-show-raw-insn \
+            --start-address=0x1e9ebc0 --stop-address=0x1ea0100 "$LIB" \
+            > reports/package-head-socket-disassembly.txt
+
+      - name: Capture nearby constants and strings
+        run: |
+          LIB=work/apk/lib/arm64-v8a/libapp.so
+          aarch64-linux-gnu-readelf -x .rodata "$LIB" > reports/rodata.hex || true
+          strings -a -t x "$LIB" | grep -Eai 'query|server_list|server info|gameid|issuer|package|socket|connect|recv|send|timeout' \
+            | head -n 8000 > reports/network-strings-with-offsets.txt || true
+
+      - name: Upload reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: survival-heroes-network-disassembly
+          path: reports/
+          retention-days: 7
