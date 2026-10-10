@@ -1,0 +1,66 @@
+name: Recover CLIENT_GET_VERIFY sender
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/recover-client-get-verify.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  recover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install tools
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq binutils-aarch64-linux-gnu
+      - name: Download libapp
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euxo pipefail
+          mkdir -p client work/xapk work/apk reports
+          gh release download apk --pattern '*.xapk' --dir client
+          unzip -q "$(find client -type f -name '*.xapk' | head -n1)" -d work/xapk
+          unzip -q "$(find work/xapk -type f -name '*.apk' | head -n1)" 'lib/arm64-v8a/libapp.so' -d work/apk
+      - name: Dump GameSender neighborhood
+        run: |
+          LIB=work/apk/lib/arm64-v8a/libapp.so
+          aarch64-linux-gnu-objdump -d -C --no-show-raw-insn --start-address=0x704000 --stop-address=0x708600 "$LIB" > reports/game-sender-neighborhood.txt
+          strings -a -t x "$LIB" | grep -Eai 'CLIENT_|GameSender::|send_login|verify|encode' > reports/sender-strings.txt || true
+          aarch64-linux-gnu-nm -D -n -C "$LIB" | grep -Eai 'GameSender|GameSock|Login|Verify|Encode' > reports/sender-symbols.txt || true
+      - name: Find opcode-one packet builders
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          lines=Path('reports/game-sender-neighborhood.txt').read_text(errors='replace').splitlines()
+          hits=[]
+          for i,line in enumerate(lines):
+              m=re.search(r'\bmov\s+w(\d+),\s*#0x1\b',line)
+              if not m: continue
+              reg=m.group(1)
+              window='\n'.join(lines[i:min(len(lines),i+24)])
+              if re.search(rf'\bstrb\s+w{reg},\s*\[',window):
+                  hits.append(i)
+          out=[]
+          for i in hits:
+              out.append(f'===== candidate line {i+1} =====')
+              out.extend(lines[max(0,i-55):min(len(lines),i+150)])
+              out.append('')
+          Path('reports/opcode-one-candidates.txt').write_text('\n'.join(out),encoding='utf-8')
+          print(f'candidates={len(hits)}')
+          PY
+      - name: Find short sends through GameSock vtable slot 56
+        run: |
+          grep -n -B80 -A30 -E 'ldr[[:space:]]+x[0-9]+, \[x[0-9]+, #56\]|blr[[:space:]]+x[0-9]+' reports/game-sender-neighborhood.txt > reports/send-call-contexts.txt || true
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: survival-heroes-client-get-verify
+          path: reports/
+          retention-days: 7
