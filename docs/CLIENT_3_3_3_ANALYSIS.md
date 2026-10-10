@@ -159,6 +159,70 @@ The recommendation routine explicitly filters records whose `type == 1` and sele
 
 The grammar is implemented and validated by `internal/legacyquery.ServerRecord`. `cmd/query-server` can generate a record from the `LEGACY_SERVER_*` environment variables. The raw `QUERY_SERVER_RECORDS` variable remains only as a protocol-research override.
 
+## Member/login request framing
+
+The 3.3.3 client connects to the address and port selected from the server-list record and builds the member/login request in a fixed `0x800`-byte working buffer.
+
+### Header
+
+The first 21 bytes are initialized as:
+
+```text
+offset 0:    uint8  kind   = 2
+offset 1:    uint32 family = 0x300   # little-endian, intentionally unaligned
+offset 5-20: 16 zero bytes
+```
+
+The first five bytes are therefore:
+
+```text
+02 00 03 00 00
+```
+
+followed by sixteen zero bytes.
+
+### Variable text blocks
+
+The native builder stores its text fields as a 32-bit padded-size followed by a zero-filled block. The original bytes are copied at the start of that block.
+
+```text
+uint32 padded_size
+byte   data[padded_size]
+```
+
+The recovered padding rule is:
+
+```text
+padded_size = align_up_16(strlen(value) + 16)
+```
+
+so even an empty text value receives a 16-byte data block. The client rejects device identifiers longer than 64 bytes.
+
+### Complete request field order
+
+After the 21-byte header, the client writes:
+
+```text
+padded-string account
+padded-string password
+padded-string login_string
+uint32        login_type
+uint8         in_stub
+padded-string device_id
+padded-string prop_md5
+padded-string record_md5
+padded-string name
+uint32        info_length = 16
+byte          info[16]
+uint32        os_type
+```
+
+The complete packet must fit the recovered `0x800`-byte client buffer.
+
+Client wrappers around the packet builder were observed using login type values `4`, `100`, `200` and `201`; their higher-level account-provider semantics are still being mapped and should not be guessed from the numeric value alone.
+
+The request layout is implemented in `internal/legacylogin`. `cmd/member-server` validates incoming packet framing while intentionally retaining only non-secret metadata such as field lengths, login type, flags and OS type. The server-side success/failure response format is **not yet considered recovered**.
+
 ## OBB / PCK0 archive
 
 The main OBB is a custom `PCK0` archive, version 15.
@@ -209,10 +273,11 @@ These are evidence about the old client architecture only. The revival server sh
 1. ✅ Recover the exact `server_list.ini` line grammar.
 2. ✅ Generate a revival-server entry from structured server configuration.
 3. Patch a tester-owned 3.3.3 APK so `[server_query].Addr` points to the revival host.
-4. Recover member/login server framing and message identifiers.
-5. Reach the original lobby using the unmodified game logic and assets.
-6. Recover room/match negotiation.
-7. Replace the development game socket with the native UDP/KCP-compatible battle transport.
+4. ✅ Recover the member/login request framing and field order.
+5. 🚧 Recover the member/login server success/failure response framing and message identifiers.
+6. Reach the original lobby using the unmodified game logic and assets.
+7. Recover room/match negotiation.
+8. Replace the development game socket with the native UDP/KCP-compatible battle transport.
 
 ## Confidence labels
 
