@@ -1,3 +1,4 @@
+# Recover the exact grammar used by the generated server_list.ini.
 name: Inspect CParseServerListFile grammar
 
 on:
@@ -45,7 +46,6 @@ jobs:
               m=re.match(r'([0-9a-fA-F]+)\s+\w\s+(.*)',line)
               if m: rows.append((int(m.group(1),16),m.group(2)))
           rows.sort()
-          # Include the following symbol boundary when available; cap huge ranges.
           allnm=subprocess.check_output(['aarch64-linux-gnu-nm','-D','-n','-C','work/apk/lib/arm64-v8a/libapp.so'],text=True,errors='replace').splitlines()
           addrs=[]
           for line in allnm:
