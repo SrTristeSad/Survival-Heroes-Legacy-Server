@@ -12,7 +12,7 @@ up:
 	docker compose up -d --build
 
 smoke:
-	./scripts/smoke-test.sh
+	sh scripts/smoke-test.sh
 
 clean:
 	rm -rf bin
