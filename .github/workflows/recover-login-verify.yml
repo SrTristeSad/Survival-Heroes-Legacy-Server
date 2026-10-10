@@ -60,17 +60,10 @@ jobs:
                   wanted.append((int(m.group(1),16), text))
 
           lines=Path('work/full-disasm.txt').read_text(errors='replace').splitlines()
-          parsed=[]
-          for i,line in enumerate(lines):
-              m=re.match(r'\s*([0-9a-fA-F]+):', line)
-              if m:
-                  parsed.append((int(m.group(1),16), i, line))
-
           out=[]
           for saddr,text in wanted:
               page=saddr & ~0xfff
               off=saddr & 0xfff
-              # ARM64 commonly materializes literals via adrp Xn,page + add Xn,Xn,#off.
               for i,line in enumerate(lines):
                   ma=re.search(r'adrp\s+(x\d+),\s*([0-9a-fA-F]+)', line)
                   if not ma or int(ma.group(2),16) != page:
@@ -127,3 +120,5 @@ jobs:
           name: survival-heroes-login-verify-recovery
           path: reports/
           retention-days: 7
+
+# trigger: workflow is now present on main
