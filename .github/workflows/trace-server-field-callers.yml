@@ -35,20 +35,29 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
           lines=Path('work/full.txt').read_text(errors='replace').splitlines()
-          needles=['bl\ta502f8 ','bl\ta503b4 ','bl\ta50454 ']
+          needles={
+              'status helper a502f8':'bl\ta502f8 ',
+              'type helper a503b4':'bl\ta503b4 ',
+              'recommend selector a50454':'bl\ta50454 ',
+              'server row UI a508d8':'bl\ta508d8 ',
+              'selected-server setter a46f28':'bl\ta46f28 ',
+          }
           out=[]
+          counts={k:0 for k in needles}
           for i,line in enumerate(lines):
-              if any(n in line for n in needles):
-                  out.append('===== '+line.strip()+' =====')
-                  out.extend(lines[max(0,i-80):min(len(lines),i+81)])
-                  out.append('')
+              for name,needle in needles.items():
+                  if needle in line:
+                      counts[name]+=1
+                      out.append(f'===== {name}: {line.strip()} =====')
+                      out.extend(lines[max(0,i-120):min(len(lines),i+121)])
+                      out.append('')
           Path('reports/server-field-callers.txt').write_text('\n'.join(out),encoding='utf-8')
-          print('hits',sum(1 for x in out if x.startswith('=====')))
+          Path('reports/counts.txt').write_text('\n'.join(f'{k}: {v}' for k,v in counts.items())+'\n')
+          print(Path('reports/counts.txt').read_text())
           PY
-          head -n 500 reports/server-field-callers.txt || true
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: survival-heroes-server-field-callers
+          name: survival-heroes-server-field-callers-v2
           path: reports/
           retention-days: 7
