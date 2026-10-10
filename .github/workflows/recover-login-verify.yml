@@ -41,7 +41,7 @@ jobs:
           strings -a -t x "$LIB" > work/strings-all.txt
           grep -Eai 'CLIENT_GET_VERIFY|SERVER_SET_VERIFY|CLIENT_RET_ENCODE|CLIENT_LOGIN|verify|encode|LenSplit|member|login' work/strings-all.txt > reports/login-strings.txt || true
 
-      - name: Resolve string cross references in ARM64 text
+      - name: Resolve verify/login string cross references
         shell: bash
         run: |
           LIB=work/libapp.so
@@ -50,33 +50,60 @@ jobs:
           from pathlib import Path
           import re
 
-          wanted=[]
+          targets = {}
           for line in Path('work/strings-all.txt').read_text(errors='replace').splitlines():
-              m=re.match(r'\s*([0-9a-fA-F]+)\s+(.*)', line)
+              m = re.match(r'\s*([0-9a-fA-F]+)\s+(.*)', line)
               if not m:
                   continue
-              text=m.group(2)
+              addr = int(m.group(1), 16)
+              text = m.group(2)
               if re.search(r'CLIENT_GET_VERIFY|SERVER_SET_VERIFY|CLIENT_RET_ENCODE|CLIENT_LOGIN|verify|encode', text, re.I):
-                  wanted.append((int(m.group(1),16), text))
+                  targets[addr] = text
 
-          lines=Path('work/full-disasm.txt').read_text(errors='replace').splitlines()
-          out=[]
-          for saddr,text in wanted:
-              page=saddr & ~0xfff
-              off=saddr & 0xfff
-              for i,line in enumerate(lines):
-                  ma=re.search(r'adrp\s+(x\d+),\s*([0-9a-fA-F]+)', line)
-                  if not ma or int(ma.group(2),16) != page:
-                      continue
-                  reg=ma.group(1)
-                  for j in range(i+1, min(i+10, len(lines))):
-                      mb=re.search(r'add\s+'+re.escape(reg)+r',\s*'+re.escape(reg)+r',\s*#0x([0-9a-fA-F]+)', lines[j])
-                      if mb and int(mb.group(1),16)==off:
-                          lo=max(0,i-35); hi=min(len(lines),j+60)
-                          out.append(f'\n===== XREF string 0x{saddr:x}: {text} =====\n')
-                          out.extend(lines[lo:hi])
-                          break
+          by_page = {}
+          for addr in targets:
+              by_page.setdefault(addr & ~0xfff, {})[addr & 0xfff] = addr
+
+          lines = Path('work/full-disasm.txt').read_text(errors='replace').splitlines()
+          pending = {}
+          hits = []
+          for i, line in enumerate(lines):
+              ma = re.search(r'adrp\s+(x\d+),\s*([0-9a-fA-F]+)', line)
+              if ma:
+                  page = int(ma.group(2), 16)
+                  if page in by_page:
+                      pending[ma.group(1)] = (page, i)
+                  continue
+
+              mb = re.search(r'add\s+(x\d+),\s*(x\d+),\s*#0x([0-9a-fA-F]+)', line)
+              if not mb or mb.group(1) != mb.group(2):
+                  continue
+              reg = mb.group(1)
+              if reg not in pending:
+                  continue
+              page, src_i = pending[reg]
+              if i - src_i > 12:
+                  pending.pop(reg, None)
+                  continue
+              off = int(mb.group(3), 16)
+              saddr = by_page.get(page, {}).get(off)
+              if saddr is not None:
+                  hits.append((src_i, i, saddr, targets[saddr]))
+                  pending.pop(reg, None)
+
+          out = []
+          seen = set()
+          for src_i, dst_i, saddr, text in hits:
+              key = (src_i, saddr)
+              if key in seen:
+                  continue
+              seen.add(key)
+              lo = max(0, src_i - 45)
+              hi = min(len(lines), dst_i + 90)
+              out.append(f'\n===== XREF string 0x{saddr:x}: {text} =====\n')
+              out.extend(lines[lo:hi])
           Path('reports/verify-string-xrefs.txt').write_text('\n'.join(out), encoding='utf-8')
+          print(f'target_strings={len(targets)} xref_hits={len(seen)}')
           PY
 
       - name: Disassemble likely verify/login functions
@@ -109,9 +136,9 @@ jobs:
           Path('reports/login-function-disassembly.txt').write_text('\n'.join(out), encoding='utf-8')
           PY
 
-      - name: Summarize opcode-sized constants near verify xrefs
+      - name: Summarize focused verify flow
         run: |
-          grep -Eai -B8 -A25 'CLIENT_GET_VERIFY|SERVER_SET_VERIFY|CLIENT_RET_ENCODE|CLIENT_LOGIN' reports/verify-string-xrefs.txt > reports/verify-focus.txt || true
+          grep -Eai -B12 -A40 'CLIENT_GET_VERIFY|SERVER_SET_VERIFY|CLIENT_RET_ENCODE|CLIENT_LOGIN' reports/verify-string-xrefs.txt > reports/verify-focus.txt || true
           wc -l reports/* || true
 
       - name: Upload recovery report
@@ -120,5 +147,3 @@ jobs:
           name: survival-heroes-login-verify-recovery
           path: reports/
           retention-days: 7
-
-# trigger: workflow is now present on main
