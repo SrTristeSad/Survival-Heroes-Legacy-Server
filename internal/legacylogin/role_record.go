@@ -11,13 +11,13 @@ import (
 type RoleParamType byte
 
 const (
-	RoleParamU32      RoleParamType = 2
-	RoleParamU64A     RoleParamType = 3
-	RoleParamU32B     RoleParamType = 4
-	RoleParamU64B     RoleParamType = 5
-	RoleParamString   RoleParamType = 6
-	RoleParamUTF16    RoleParamType = 7
-	RoleParamPairU32  RoleParamType = 8
+	RoleParamU32     RoleParamType = 2
+	RoleParamU64A    RoleParamType = 3
+	RoleParamU32B    RoleParamType = 4
+	RoleParamU64B    RoleParamType = 5
+	RoleParamString  RoleParamType = 6
+	RoleParamUTF16   RoleParamType = 7
+	RoleParamPairU32 RoleParamType = 8
 )
 
 type RoleParam struct {
