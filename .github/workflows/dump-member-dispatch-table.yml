@@ -1,5 +1,6 @@
 name: Dump legacy member dispatch table
 
+# Resolve old GameReceiver opcodes without guessing enum values.
 on:
   push:
     branches: [main]
@@ -40,8 +41,6 @@ jobs:
           from pathlib import Path
           import re, subprocess
           lib='work/apk/lib/arm64-v8a/libapp.so'
-          raw=subprocess.check_output(['aarch64-linux-gnu-objcopy','-O','binary','--only-section=.rodata',lib,'/dev/stdout']) if False else None
-          # Use readelf to locate .rodata file offset/address, then read table directly.
           sec=subprocess.check_output(['aarch64-linux-gnu-readelf','-SW',lib],text=True)
           m=re.search(r'\[\s*\d+\]\s+\.rodata\s+PROGBITS\s+([0-9a-fA-F]+)\s+([0-9a-fA-F]+)\s+([0-9a-fA-F]+)',sec)
           if not m:
