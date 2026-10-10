@@ -97,6 +97,21 @@ func TestBuildServerSetVerifyModeOne(t *testing.T) {
 	}
 }
 
+func TestBuildServerSetEncode(t *testing.T) {
+	payload := BuildServerSetEncode()
+	if len(payload) != ServerSetEncodeMinSize {
+		t.Fatalf("SET_ENCODE len=%d want=%d", len(payload), ServerSetEncodeMinSize)
+	}
+	if payload[0] != ServerSetEncodeOpcode {
+		t.Fatalf("SET_ENCODE opcode=%02x", payload[0])
+	}
+	for i, b := range payload[1:] {
+		if b != 0 {
+			t.Fatalf("SET_ENCODE byte[%d]=%02x want=00", i+1, b)
+		}
+	}
+}
+
 func TestBuildMinimalServerLoginSuccess(t *testing.T) {
 	var h LoginSuccessHeader
 	for i := 0; i < 9; i++ {
