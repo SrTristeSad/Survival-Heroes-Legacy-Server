@@ -1,5 +1,6 @@
 name: Search OBB handshake scripts
 
+# Search only owner-supplied archived resources and publish snippets, not assets.
 on:
   push:
     branches: [main]
@@ -68,7 +69,7 @@ jobs:
           hits=[]
           failures=[]
           with obb.open('rb') as fp:
-              for idx,e in enumerate(candidates,1):
+              for e in candidates:
                   try:
                       data=pck0.read_entry(fp,e)
                   except Exception as exc:
