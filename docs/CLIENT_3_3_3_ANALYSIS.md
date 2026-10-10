@@ -132,7 +132,32 @@ This is confirmed:
 4. The result is written as `server_list.ini`.
 5. The generic reader uses `strtok(..., "\r\n")`, therefore each response string is one logical line of the generated file.
 
-The exact schema of those lines is still being cross-referenced against `FormLoginServers` before the server starts returning a non-empty list.
+## Recovered `server_list.ini` record grammar
+
+`FormLoginServers::LoadServerList` splits every line using `/` and consumes exactly three text fields followed by five decimal integers:
+
+```text
+server_id/district_key/address/port/type/open/load/priority
+```
+
+Recovered semantics:
+
+| Field | Client behavior |
+|---|---|
+| `server_id` | copied to the selected-login server ID |
+| `district_key` | copied as district data and also passed through the client's localization path |
+| `address` | copied directly to the selected-login server address |
+| `port` | copied directly to the selected-login server port |
+| `type` | `0` normal, `1` recommended, `2` new |
+| `open` | `0` stopped, `1` open |
+| `load` | when open: `0` good, `1` normal, `2` hot |
+| `priority` | lower value wins when choosing among recommended servers |
+
+The recommendation routine explicitly filters records whose `type == 1` and selects the smallest `priority` value. The UI maps `type == 1` to `server_recommand` (the original client spelling) and `type == 2` to `server_new`. Server-state rendering maps `open == 0` to `server_stop`; when `open == 1`, load values 0/1/2 map to `server_good`, `server_normal`, and `server_hot`.
+
+`server_issuer` is maintained separately by the login/server-selection flow; it is not one of the eight slash-delimited fields.
+
+The grammar is implemented and validated by `internal/legacyquery.ServerRecord`. `cmd/query-server` can generate a record from the `LEGACY_SERVER_*` environment variables. The raw `QUERY_SERVER_RECORDS` variable remains only as a protocol-research override.
 
 ## OBB / PCK0 archive
 
@@ -181,8 +206,8 @@ These are evidence about the old client architecture only. The revival server sh
 
 ## Next protocol milestones
 
-1. Recover the exact line schema consumed from `server_list.ini`.
-2. Return one revival server from TCP/88.
+1. ✅ Recover the exact `server_list.ini` line grammar.
+2. ✅ Generate a revival-server entry from structured server configuration.
 3. Patch a tester-owned 3.3.3 APK so `[server_query].Addr` points to the revival host.
 4. Recover member/login server framing and message identifiers.
 5. Reach the original lobby using the unmodified game logic and assets.
