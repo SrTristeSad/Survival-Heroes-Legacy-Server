@@ -1,4 +1,16 @@
 services:
+  query:
+    build: .
+    entrypoint: ["/usr/local/bin/query-server"]
+    restart: unless-stopped
+    environment:
+      QUERY_ADDR: ":8088"
+      QUERY_ISSUER: "${QUERY_ISSUER:-10000}"
+      QUERY_GAME_ID: "${QUERY_GAME_ID:-125}"
+      QUERY_SERVER_RECORDS: "${QUERY_SERVER_RECORDS:-}"
+    ports:
+      - "${QUERY_PORT:-88}:8088/tcp"
+
   gateway:
     build: .
     command: ["/usr/local/bin/gateway"]
