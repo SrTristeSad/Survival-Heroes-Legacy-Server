@@ -22,4 +22,26 @@ The sender writes `argument_count - 2` into the 16-bit extra-parameter count. Op
 
 `internal/legacylogin/create_role.go` validates the fixed prefix and reports only structural metadata; `cmd/member-server` deliberately does not log the requested character name itself.
 
-The next target is the corresponding server response and the choose/enter-role sequence.
+## Message-table context
+
+The original client message table confirms this early sequence:
+
+```text
+client 0x00 CLIENT_GET_VERIFY
+client 0x01 CLIENT_RET_ENCODE
+client 0x02 CLIENT_LOGIN
+client 0x03 CLIENT_WORLD_INFO
+client 0x04 CLIENT_CHOOSE_ROLE
+client 0x05 CLIENT_CREATE_ROLE
+client 0x06 CLIENT_DELETE_ROLE
+
+server 0x01 SERVER_SET_VERIFY
+server 0x02 SERVER_SET_ENCODE
+server 0x03 SERVER_ERROR_CODE
+server 0x04 SERVER_LOGIN_SUCCEED
+server 0x05 SERVER_WORLD_INFO
+```
+
+There is no create-role-specific success message in the recovered server message table. Failures can use the generic `SERVER_ERROR_CODE`; successful creation/selection therefore continues through the normal role/world-entry flow rather than a dedicated `SERVER_CREATE_ROLE_SUCCESS` packet.
+
+The next clean-room target is `CLIENT_CHOOSE_ROLE` and the corresponding `SERVER_WORLD_INFO` payload.
