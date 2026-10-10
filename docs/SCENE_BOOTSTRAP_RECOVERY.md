@@ -1,63 +1,84 @@
-# Scene bootstrap recovery
+# Recuperação do bootstrap de cena
 
-Clean-room ARM64 analysis of the archived Survival Heroes 3.3.3 client has recovered the first three scene-bootstrap messages sufficiently to build parser-valid minimal packets without inventing gameplay data.
+A análise independente do cliente Survival Heroes 3.3.3 recuperou as primeiras mensagens usadas logo após login e seleção de personagem.
 
-## Message opcodes
-
-The original server message table is zero-based. Around the scene transition it contains:
+## Mensagens confirmadas
 
 ```text
 0x09 SERVER_PROPERTY_TABLE
 0x0A SERVER_RECORD_TABLE
 0x0B SERVER_ENTRY_SCENE
-0x0C SERVER_EXIT_SCENE
 ```
 
-## PROPERTY_TABLE
+## `SERVER_PROPERTY_TABLE`
 
-`GameReceiver::ServerPropertyTable` requires at least three bytes and reads a little-endian `uint16` count at offset `+1`. With count zero, no table entries are parsed and a packet of exactly three bytes is accepted:
+O cliente aceita uma forma mínima válida contendo apenas opcode e contagem zero:
 
 ```text
-09 00 00
+uint8  opcode = 0x09
+uint16 count  = 0
 ```
 
-The receiver marks its property-table initialization flag after successful processing.
+Isso permite inicializar a tabela de propriedades sem inventar dados ainda não conhecidos.
 
-`internal/legacylogin.BuildEmptyServerPropertyTable()` implements this minimal form.
+## `SERVER_RECORD_TABLE`
 
-## RECORD_TABLE
-
-`GameReceiver::ServerRecordTable` has the same parser-valid empty shape: opcode plus a little-endian zero `uint16` count:
+Também aceita uma forma mínima válida:
 
 ```text
-0A 00 00
+uint8  opcode = 0x0A
+uint16 count  = 0
 ```
 
-The receiver independently marks its record-table initialization flag after successful processing.
+## `SERVER_ENTRY_SCENE`
 
-`internal/legacylogin.BuildEmptyServerRecordTable()` implements this minimal form.
+O pacote mínimo recuperado possui 15 bytes e inclui dois componentes `uint32` usados para identificar a cena.
 
-## ENTRY_SCENE fixed prefix
-
-`GameReceiver::ServerEntryScene` requires at least 15 bytes. The recovered fixed prefix is:
+O cliente formata esses dois valores como:
 
 ```text
-offset 0     uint8   opcode = 0x0B
-offset 1     uint32  field0
-offset 5     uint32  scene_a
-offset 9     uint32  scene_b
-offset 13    uint16  property_count
-offset 15    ...     property payload
+%u-%u
 ```
 
-The released 3.3.3 handler does not consume `field0` in the recovered function path, so its business meaning remains intentionally unnamed.
+A análise do loader de `scenes.ini` confirmou que a ordem correta é:
 
-The important part is the scene lookup: the client formats `scene_a` and `scene_b` using the literal format string `%u-%u`, then looks that key up in its already-loaded scene registry. If the pair is not present, the receiver enters its `(GameReceiver::ServerEntryScene)no scene` error path.
+```text
+Scene-Member
+```
 
-A zero-property prefix is parser-valid at the property-list layer, but it is **not** safe to emit with arbitrary scene numbers. `BuildServerEntrySceneZeroProperties` therefore exists as a wire-format builder only; the compatibility server must first recover a real key from the client scene registry.
+## Cena inicial de teste
 
-Before processing `ENTRY_SCENE`, the receiver also ensures the PROPERTY_TABLE and RECORD_TABLE initialization paths have run. This is why the revival implementation treats those two empty-table packets as explicit prerequisites rather than skipping them.
+No registro original do cliente foi encontrada a cena:
 
-## Current milestone
+```text
+Scene = 119
+Member = 0
+Config = ini\scene\moba_chiji
+Clonable = 1
+BattleWarID = 1
+PreLoad = 1
+```
 
-The remaining blocker for a controlled first scene-entry experiment is identifying at least one real `scene_a-scene_b` key from the archived client data. Small registry files such as `res\\share\\scenes.ini` and the scene XML metadata are being inspected for that mapping; proprietary graphical/game assets are not added to this repository.
+Portanto a chave conhecida pelo cliente é:
+
+```text
+119-0
+```
+
+## Implementação atual
+
+Quando habilitado, o `member-server` pode responder a `CLIENT_CHOOSE_ROLE` com:
+
+```text
+SERVER_PROPERTY_TABLE vazio
+→ SERVER_RECORD_TABLE vazio
+→ SERVER_ENTRY_SCENE 119-0
+```
+
+Esse comportamento é experimental e permanece desligado por padrão. Para ativar todo o fluxo recuperado:
+
+```bash
+sh scripts/enable-legacy-flow.sh
+```
+
+A análise estática prova a estrutura e a chave da cena, mas a entrada real no lobby/mapa só será considerada confirmada depois do teste com um APK 3.3.3 apontado para a VPS.
