@@ -25,9 +25,10 @@ type loginReadResult struct {
 }
 
 type verifyReplyConfig struct {
-	Enabled       bool
-	SendSetEncode bool
-	Packet        legacylogin.SetVerifyPacket
+	Enabled          bool
+	SendSetEncode    bool
+	SendLoginSuccess bool
+	Packet           legacylogin.SetVerifyPacket
 }
 
 func envBool(name string, fallback bool) bool {
@@ -59,6 +60,7 @@ func loadVerifyReplyConfig() (verifyReplyConfig, error) {
 	var cfg verifyReplyConfig
 	cfg.Enabled = envBool("MEMBER_SEND_SET_VERIFY", false)
 	cfg.SendSetEncode = envBool("MEMBER_SEND_SET_ENCODE", false)
+	cfg.SendLoginSuccess = envBool("MEMBER_SEND_LOGIN_SUCCESS", false)
 	if !cfg.Enabled {
 		return cfg, nil
 	}
@@ -98,8 +100,6 @@ func looksLikeRawLogin(data []byte) bool {
 	return data[0] == legacylogin.PacketKind && binary.LittleEndian.Uint32(data[1:5]) == legacylogin.PacketFamily
 }
 
-// readMemberFrame reads one real LenSplitProtocol frame from the legacy TCP
-// connection. It does not interpret or retain credential fields.
 func readMemberFrame(conn net.Conn) ([]byte, int, error) {
 	var header [legacylogin.WireHeaderSize]byte
 	if _, err := io.ReadFull(conn, header[:]); err != nil {
@@ -116,8 +116,6 @@ func readMemberFrame(conn net.Conn) ([]byte, int, error) {
 	return payload, legacylogin.WireHeaderSize + int(n), nil
 }
 
-// readLoginPacket remains available for deterministic protocol tests and the
-// raw laboratory harness. Real archived clients enter through readMemberFrame.
 func readLoginPacket(conn net.Conn) (loginReadResult, error) {
 	var result loginReadResult
 	buf := make([]byte, 0, legacylogin.MaxPacketSize+legacylogin.WireHeaderSize)
@@ -205,10 +203,7 @@ func sendSetVerify(conn net.Conn, remote string, cfg verifyReplyConfig) error {
 	if err != nil {
 		return err
 	}
-	log.Printf(
-		"member %s: sent experimental SERVER_SET_VERIFY field0=%d mode=%d payload_bytes=%d wire_bytes=%d",
-		remote, cfg.Packet.Field0, cfg.Packet.Mode, len(payload), wireBytes,
-	)
+	log.Printf("member %s: sent experimental SERVER_SET_VERIFY field0=%d mode=%d payload_bytes=%d wire_bytes=%d", remote, cfg.Packet.Field0, cfg.Packet.Mode, len(payload), wireBytes)
 	return nil
 }
 
@@ -219,6 +214,24 @@ func sendSetEncode(conn net.Conn, remote string) error {
 		return err
 	}
 	log.Printf("member %s: sent experimental SERVER_SET_ENCODE payload_bytes=%d wire_bytes=%d", remote, len(payload), wireBytes)
+	return nil
+}
+
+func sendZeroRoleLoginSuccess(conn net.Conn, remote string) error {
+	// The archived client consumes a 41-byte fixed prefix. The tenth uint32 is
+	// role_count. Keeping all fixed values at zero is a controlled experiment
+	// intended to reach the client's no-role / create-role path without making
+	// up a proprietary character record.
+	var header legacylogin.LoginSuccessHeader
+	payload, err := legacylogin.BuildServerLoginSuccessHeader(header)
+	if err != nil {
+		return err
+	}
+	wireBytes, err := writeFramedPayload(conn, payload)
+	if err != nil {
+		return err
+	}
+	log.Printf("member %s: sent experimental SERVER_LOGIN_SUCCESS role_count=0 payload_bytes=%d wire_bytes=%d", remote, len(payload), wireBytes)
 	return nil
 }
 
@@ -262,8 +275,6 @@ func handle(conn net.Conn, verifyCfg verifyReplyConfig) {
 			}
 
 		case legacylogin.ClientRetEncodeOpcode:
-			// The client-to-server body grammar is still under recovery. Do not
-			// print its bytes: it may include key/transform material.
 			log.Printf("member %s: CLIENT_RET_ENCODE observed payload_size=%d", remote, len(payload))
 			if verifyCfg.SendSetEncode {
 				if err := sendSetEncode(conn, remote); err != nil {
@@ -282,6 +293,12 @@ func handle(conn net.Conn, verifyCfg verifyReplyConfig) {
 				log.Printf("member %s: CLIENT_LOGIN trailing_bytes=%d", remote, len(payload)-consumed)
 			}
 			logLoginMetadata(remote, wireBytes, meta)
+			if verifyCfg.SendLoginSuccess {
+				if err := sendZeroRoleLoginSuccess(conn, remote); err != nil {
+					log.Printf("member %s: SERVER_LOGIN_SUCCESS write failed: %v", remote, err)
+					return
+				}
+			}
 
 		default:
 			log.Printf("member %s: unknown client opcode=0x%02x payload_size=%d", remote, payload[0], len(payload))
@@ -303,10 +320,7 @@ func main() {
 		log.Fatal(err)
 	}
 	defer ln.Close()
-	log.Printf(
-		"legacy member/login compatibility server listening on %s (experimental_set_verify=%t set_encode=%t mode=%d field0=%d)",
-		addr, verifyCfg.Enabled, verifyCfg.SendSetEncode, verifyCfg.Packet.Mode, verifyCfg.Packet.Field0,
-	)
+	log.Printf("legacy member/login compatibility server listening on %s (experimental_set_verify=%t set_encode=%t login_success=%t mode=%d field0=%d)", addr, verifyCfg.Enabled, verifyCfg.SendSetEncode, verifyCfg.SendLoginSuccess, verifyCfg.Packet.Mode, verifyCfg.Packet.Field0)
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
