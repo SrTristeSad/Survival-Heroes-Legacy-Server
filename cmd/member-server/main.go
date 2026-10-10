@@ -218,10 +218,6 @@ func sendSetEncode(conn net.Conn, remote string) error {
 }
 
 func sendZeroRoleLoginSuccess(conn net.Conn, remote string) error {
-	// The archived client consumes a 41-byte fixed prefix. The tenth uint32 is
-	// role_count. Keeping all fixed values at zero is a controlled experiment
-	// intended to reach the client's no-role / create-role path without making
-	// up a proprietary character record.
 	var header legacylogin.LoginSuccessHeader
 	payload, err := legacylogin.BuildServerLoginSuccessHeader(header)
 	if err != nil {
@@ -299,6 +295,19 @@ func handle(conn net.Conn, verifyCfg verifyReplyConfig) {
 					return
 				}
 			}
+
+		case legacylogin.ClientCreateRoleOpcode:
+			meta, parseErr := legacylogin.InspectCreateRoleRequest(payload)
+			if parseErr != nil {
+				log.Printf("member %s: CLIENT_CREATE_ROLE validation failed: %v", remote, parseErr)
+				return
+			}
+			// Do not log the requested character name itself; its structural
+			// length is sufficient for interoperability research.
+			log.Printf(
+				"member %s: CLIENT_CREATE_ROLE wire_bytes=%d field0=%d name_utf16_units=%d extra_params=%d payload_bytes=%d",
+				remote, wireBytes, meta.Field0, meta.NameUTF16Units, meta.ExtraParamCount, meta.PayloadBytes,
+			)
 
 		default:
 			log.Printf("member %s: unknown client opcode=0x%02x payload_size=%d", remote, payload[0], len(payload))
