@@ -1,0 +1,8 @@
+.env
+*.apk
+*.xapk
+*.obb
+captures/
+reversed/
+bin/
+.DS_Store
