@@ -1,8 +1,8 @@
 # Survival Heroes Legacy Server
 
-Clean-room community server reimplementation scaffold for preserving **Survival Heroes** multiplayer after shutdown.
+Clean-room community server reimplementation for preserving **Survival Heroes** multiplayer after shutdown.
 
-> Status: **Phase 0 / protocol discovery pending**. The included services are functional scaffolding, not yet compatible with the original 3.3.3 client.
+> Status: **Phase 1 / original 3.3.3 bootstrap protocol recovered.** The TCP server-query service now implements the packet shape used by the archived client. Login/member-server and battle protocols are still being recovered.
 
 ## Goals
 
@@ -12,16 +12,29 @@ Clean-room community server reimplementation scaffold for preserving **Survival 
 - Make self-hosting simple on a small VPS/aaPanel using Docker Compose.
 - Document the protocol so preservation does not depend on one person.
 
-## What already works in Phase 0
+## Current progress
 
-- HTTP health endpoint.
-- Local guest account creation and bearer-token session.
-- Profile endpoint.
-- In-memory matchmaking queue.
-- Automatic two-player match allocation (configurable with `MATCH_SIZE`).
-- Separate TCP game service with a tiny JSON development protocol (`welcome`, `ping/pong`, `move`).
+### Recovered from the original 3.3.3 client
+
+- Original server-query bootstrap endpoint and packet framing.
+- Exact 28-byte little-endian query request used on TCP port **88**.
+- Query response envelope, raw/zlib behavior and NUL-terminated server-line payload.
+- `server_list.ini` generation behavior (`one returned string = one CRLF-terminated line`).
+- Main OBB archive format: **PCK0 v15**, including a working clean-room index/extraction tool.
+- Battle networking architecture: native UDP channels with **KCP** used by the reliable-sequenced channel.
+- Runtime identified as native C++ with Cocos2d-x-related components, Lua and PhysX; it is not Unity.
+
+See [`docs/CLIENT_3_3_3_ANALYSIS.md`](docs/CLIENT_3_3_3_ANALYSIS.md) for confirmed details.
+
+### Server components
+
+- `query-server`: client-compatible TCP/88 bootstrap query implementation.
+- `gateway`: Phase-0 HTTP guest/profile/matchmaking laboratory.
+- `game-server`: Phase-0 TCP/JSON synchronization laboratory; **not** the final battle protocol.
 - Docker Compose deployment.
-- Static APK/XAPK/OBB network-string scanner.
+- Automated Go tests/build checks.
+- APK/XAPK/OBB static-analysis workflows.
+- PCK0 v15 parser/extractor at `tools/pck0_extract.py`.
 
 ## Quick start
 
@@ -31,12 +44,17 @@ sh scripts/setup.sh
 sh scripts/smoke-test.sh
 ```
 
-Services:
+Default services:
 
-- Gateway/API: `http://localhost:8080`
+- Original-compatible server query: `tcp://localhost:88`
+- Development Gateway/API: `http://localhost:8080`
 - Development game socket: `tcp://localhost:7000`
 
-## API (development only)
+The archived client still contains its historical raw query IP. For interoperability testing, a tester-owned APK must be repackaged so `[server_query].Addr` in `assets/config.ini` points at the revival host. Do not probe the historical IP.
+
+## Development API
+
+The HTTP API and TCP/JSON game socket are scaffolding used while the real protocols are recovered. They are intentionally kept separate from the legacy-compatible implementations.
 
 ### Create guest
 
@@ -57,18 +75,20 @@ curl -X POST http://localhost:8080/v1/matchmaking/enqueue \
 
 ## Client files
 
-Do **not** commit APK, XAPK or OBB files. Put them outside the repository or in ignored local directories. See `docs/REVERSE_ENGINEERING.md`.
+Do **not** commit APK, XAPK or OBB files to this repository. Analysis/repacking tools operate on a client supplied separately by its owner. See `docs/REVERSE_ENGINEERING.md`.
 
 ## Roadmap
 
-1. Inspect pristine Survival Heroes 3.3.3 APK/XAPK + OBB.
-2. Identify bootstrap/login endpoints and wire format.
-3. Make the original client complete bootstrap against the local gateway.
-4. Recreate account/profile/lobby responses.
-5. Discover matchmaking/session negotiation.
-6. Recreate battle connection and movement synchronization.
-7. Add combat, loot, shrinking zone and authoritative validation incrementally.
-8. Add PostgreSQL/Redis only after protocol behavior is known well enough to justify persistence.
+1. ✅ Inspect pristine Survival Heroes 3.3.3 APK/XAPK + OBB.
+2. ✅ Recover the TCP/88 server-query request/response protocol.
+3. 🚧 Recover the exact `server_list.ini` line schema and return the revival server.
+4. Patch a tester-owned 3.3.3 client to use the revival bootstrap host.
+5. Recover member/login server framing and authentication flow.
+6. Reach the original lobby.
+7. Recover room/match negotiation.
+8. Implement the native UDP/KCP battle transport and movement synchronization.
+9. Add combat, loot, shrinking zone and authoritative validation incrementally.
+10. Add persistence only after the original behavior is understood well enough to model it correctly.
 
 ## Legal / preservation note
 
