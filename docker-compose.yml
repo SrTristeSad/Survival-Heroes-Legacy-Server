@@ -25,6 +25,10 @@ services:
     restart: unless-stopped
     environment:
       MEMBER_ADDR: ":7001"
+      MEMBER_SEND_SET_VERIFY: "${MEMBER_SEND_SET_VERIFY:-false}"
+      MEMBER_SET_VERIFY_FIELD0: "${MEMBER_SET_VERIFY_FIELD0:-0}"
+      MEMBER_SET_VERIFY_MODE: "${MEMBER_SET_VERIFY_MODE:-0}"
+      MEMBER_SET_VERIFY_KEY_HEX: "${MEMBER_SET_VERIFY_KEY_HEX:-}"
     ports:
       - "${MEMBER_PORT:-7001}:7001/tcp"
 
