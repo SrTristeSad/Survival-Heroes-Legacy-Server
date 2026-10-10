@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/SrTristeSad/Survival-Heroes-Legacy-Server/internal/legacyquery"
+	"github.com/SrTristeSad/survival-heroes-legacy-server/internal/legacyquery"
 )
 
 func envUint32(name string, fallback uint32) uint32 {
