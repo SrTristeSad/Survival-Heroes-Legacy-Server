@@ -1,0 +1,72 @@
+name: Recover pre-login GameSock handshake
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/recover-prelogin-handshake.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  recover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install tools
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq binutils-aarch64-linux-gnu
+      - name: Download libapp
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euxo pipefail
+          mkdir -p client work/xapk work/apk reports
+          gh release download apk --pattern '*.xapk' --dir client
+          unzip -q "$(find client -type f -name '*.xapk' | head -n1)" -d work/xapk
+          unzip -q "$(find work/xapk -type f -name '*.apk' | head -n1)" 'lib/arm64-v8a/libapp.so' -d work/apk
+      - name: Dump pre-login region
+        run: |
+          LIB=work/apk/lib/arm64-v8a/libapp.so
+          aarch64-linux-gnu-objdump -d -C --no-show-raw-insn --start-address=0x6fd000 --stop-address=0x704200 "$LIB" > reports/prelogin.txt
+          strings -a -t x "$LIB" > reports/strings.txt
+          aarch64-linux-gnu-nm -D -n -C "$LIB" | grep -Eai 'GameSock|GameSender|GameReceiver|ConnectServer|Connect|Verify|Encode|Login' > reports/symbols.txt || true
+      - name: Locate opcode-one sends
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          lines=Path('reports/prelogin.txt').read_text(errors='replace').splitlines()
+          out=[]
+          # Find writes of constant 1 into byte-sized packet locations, then
+          # retain broad context so calls through the socket vtable are visible.
+          for i,line in enumerate(lines):
+              ms=re.search(r'\bstrb\s+w(\d+),\s*\[',line)
+              mst=re.search(r'\bsturb\s+w(\d+),\s*\[',line)
+              m=ms or mst
+              if not m: continue
+              reg=m.group(1)
+              found=None
+              for j in range(max(0,i-100),i):
+                  mm=re.search(rf'\bmov\s+w{reg},\s*#(0x[0-9a-fA-F]+|\d+)',lines[j])
+                  if mm:
+                      found=(j,int(mm.group(1),0))
+              if not found or found[1] != 1: continue
+              out.append(f'===== candidate pc {line.strip().split(":")[0]} =====')
+              out.extend(lines[max(0,found[0]-80):min(len(lines),i+180)])
+              out.append('')
+          Path('reports/opcode1-contexts.txt').write_text('\n'.join(out),encoding='utf-8')
+          print('candidate sections:', sum(1 for x in out if x.startswith('=====')))
+          PY
+      - name: Trace connection callbacks and one-byte sends
+        run: |
+          grep -n -E -B60 -A120 'mov[[:space:]]+x2, #0x1|mov[[:space:]]+w[0-9]+, #0x1|#56\]|#664\]|#504\]' reports/prelogin.txt > reports/short-send-contexts.txt || true
+          grep -n -E -B80 -A150 'on_connect|connect_succeed|connect_server|verify|encode|login' reports/strings.txt > reports/string-neighborhoods.txt || true
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: survival-heroes-prelogin-handshake
+          path: reports/
+          retention-days: 7
