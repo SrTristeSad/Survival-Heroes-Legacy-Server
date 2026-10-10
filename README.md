@@ -2,7 +2,7 @@
 
 Clean-room community server reimplementation for preserving **Survival Heroes** multiplayer after shutdown.
 
-> Status: **Phase 1 / original 3.3.3 bootstrap and server-list grammar recovered.** The TCP server-query service implements the packet shape and eight-field server record used by the archived client. Login/member-server and battle protocols are still being recovered.
+> Status: **Phase 2 / original 3.3.3 bootstrap, server-list grammar and member-login request framing recovered.** The client can now be directed through the original server-selection path to a compatibility member service. The server-side login response and later lobby/battle protocols are still being recovered.
 
 ## Goals
 
@@ -22,6 +22,8 @@ Clean-room community server reimplementation for preserving **Survival Heroes** 
 - `server_list.ini` generation behavior (`one returned string = one CRLF-terminated line`).
 - Exact server-list line grammar: `server_id/district/address/port/type/open/load/priority`.
 - Server type/open/load semantics and recommended-server selection behavior.
+- Member/login request header and complete field order, including the client's 16-byte padded string-block format.
+- Login-mode values observed in client wrappers (`4`, `100`, `200`, `201`).
 - Main OBB archive format: **PCK0 v15**, including a working clean-room index/extraction tool.
 - Battle networking architecture: native UDP channels with **KCP** used by the reliable-sequenced channel.
 - Runtime identified as native C++ with Cocos2d-x-related components, Lua and PhysX; it is not Unity.
@@ -31,6 +33,7 @@ See [`docs/CLIENT_3_3_3_ANALYSIS.md`](docs/CLIENT_3_3_3_ANALYSIS.md) for confirm
 ### Server components
 
 - `query-server`: client-compatible TCP/88 bootstrap query implementation with structured server-list generation.
+- `member-server`: original-protocol compatibility listener on TCP/7001. It validates recovered login framing while intentionally retaining only non-secret packet metadata until the response protocol is implemented.
 - `gateway`: Phase-0 HTTP guest/profile/matchmaking laboratory.
 - `game-server`: Phase-0 TCP/JSON synchronization laboratory; **not** the final battle protocol.
 - Docker Compose deployment.
@@ -50,6 +53,7 @@ sh scripts/smoke-test.sh
 Default services:
 
 - Original-compatible server query: `tcp://localhost:88`
+- Original member/login compatibility service: `tcp://localhost:7001`
 - Development Gateway/API: `http://localhost:8080`
 - Development game socket: `tcp://localhost:7000`
 
@@ -57,7 +61,7 @@ To publish one server in the original selection UI, configure at minimum:
 
 ```env
 LEGACY_SERVER_HOST=your.public.host
-LEGACY_SERVER_PORT=your_member_server_port
+LEGACY_SERVER_PORT=7001
 ```
 
 The default generated record is marked recommended, open and low-load. `LEGACY_SERVER_TYPE`, `LEGACY_SERVER_OPEN`, `LEGACY_SERVER_LOAD`, and `LEGACY_SERVER_PRIORITY` can override those values.
@@ -95,8 +99,8 @@ Do **not** commit APK, XAPK or OBB files to this repository. Analysis/repacking 
 2. ✅ Recover the TCP/88 server-query request/response protocol.
 3. ✅ Recover the exact `server_list.ini` line schema and generate the revival-server record.
 4. Patch a tester-owned 3.3.3 client to use the revival bootstrap host.
-5. 🚧 Recover member/login server framing and authentication flow.
-6. Reach the original lobby.
+5. ✅ Recover the member/login request framing and field layout.
+6. 🚧 Recover the member/login server response and reach the original lobby.
 7. Recover room/match negotiation.
 8. Implement the native UDP/KCP battle transport and movement synchronization.
 9. Add combat, loot, shrinking zone and authoritative validation incrementally.
