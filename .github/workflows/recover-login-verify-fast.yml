@@ -57,3 +57,5 @@ jobs:
           name: survival-heroes-login-verify-fast
           path: reports/
           retention-days: 7
+
+# trigger: workflow is available on main
