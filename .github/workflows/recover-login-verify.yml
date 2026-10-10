@@ -1,0 +1,129 @@
+name: Recover legacy login verify handshake
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/recover-login-verify.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  recover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install reverse-engineering tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq binutils-aarch64-linux-gnu
+
+      - name: Download archived client library
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euxo pipefail
+          mkdir -p client work/xapk work/apk reports
+          gh release download apk --pattern '*.xapk' --dir client
+          unzip -q "$(find client -type f -name '*.xapk' | head -n1)" -d work/xapk
+          unzip -q "$(find work/xapk -type f -name '*.apk' | head -n1)" 'lib/arm64-v8a/libapp.so' -d work/apk
+          cp work/apk/lib/arm64-v8a/libapp.so work/libapp.so
+
+      - name: Inventory login and verify symbols
+        run: |
+          LIB=work/libapp.so
+          aarch64-linux-gnu-nm -D -n -C "$LIB" > work/nm.txt || true
+          grep -Eai 'verify|encode|login|member|LenSplit|crypt|cipher|key' work/nm.txt > reports/login-symbols.txt || true
+          strings -a -t x "$LIB" > work/strings-all.txt
+          grep -Eai 'CLIENT_GET_VERIFY|SERVER_SET_VERIFY|CLIENT_RET_ENCODE|CLIENT_LOGIN|verify|encode|LenSplit|member|login' work/strings-all.txt > reports/login-strings.txt || true
+
+      - name: Resolve string cross references in ARM64 text
+        shell: bash
+        run: |
+          LIB=work/libapp.so
+          aarch64-linux-gnu-objdump -d -C --no-show-raw-insn "$LIB" > work/full-disasm.txt
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          wanted=[]
+          for line in Path('work/strings-all.txt').read_text(errors='replace').splitlines():
+              m=re.match(r'\s*([0-9a-fA-F]+)\s+(.*)', line)
+              if not m:
+                  continue
+              text=m.group(2)
+              if re.search(r'CLIENT_GET_VERIFY|SERVER_SET_VERIFY|CLIENT_RET_ENCODE|CLIENT_LOGIN|verify|encode', text, re.I):
+                  wanted.append((int(m.group(1),16), text))
+
+          lines=Path('work/full-disasm.txt').read_text(errors='replace').splitlines()
+          parsed=[]
+          for i,line in enumerate(lines):
+              m=re.match(r'\s*([0-9a-fA-F]+):', line)
+              if m:
+                  parsed.append((int(m.group(1),16), i, line))
+
+          out=[]
+          for saddr,text in wanted:
+              page=saddr & ~0xfff
+              off=saddr & 0xfff
+              # ARM64 commonly materializes literals via adrp Xn,page + add Xn,Xn,#off.
+              for i,line in enumerate(lines):
+                  ma=re.search(r'adrp\s+(x\d+),\s*([0-9a-fA-F]+)', line)
+                  if not ma or int(ma.group(2),16) != page:
+                      continue
+                  reg=ma.group(1)
+                  for j in range(i+1, min(i+10, len(lines))):
+                      mb=re.search(r'add\s+'+re.escape(reg)+r',\s*'+re.escape(reg)+r',\s*#0x([0-9a-fA-F]+)', lines[j])
+                      if mb and int(mb.group(1),16)==off:
+                          lo=max(0,i-35); hi=min(len(lines),j+60)
+                          out.append(f'\n===== XREF string 0x{saddr:x}: {text} =====\n')
+                          out.extend(lines[lo:hi])
+                          break
+          Path('reports/verify-string-xrefs.txt').write_text('\n'.join(out), encoding='utf-8')
+          PY
+
+      - name: Disassemble likely verify/login functions
+        shell: bash
+        run: |
+          LIB=work/libapp.so
+          python3 - <<'PY'
+          from pathlib import Path
+          import re, subprocess
+          rows=[]
+          for line in Path('work/nm.txt').read_text(errors='replace').splitlines():
+              m=re.match(r'([0-9a-fA-F]+)\s+\w\s+(.*)', line)
+              if not m:
+                  continue
+              name=m.group(2)
+              if re.search(r'verify|encode|login|member|LenSplit', name, re.I):
+                  rows.append((int(m.group(1),16),name))
+          rows=rows[:250]
+          out=[]
+          for addr,name in rows:
+              stop=addr+0x900
+              try:
+                  text=subprocess.check_output([
+                      'aarch64-linux-gnu-objdump','-d','-C','--no-show-raw-insn',
+                      f'--start-address=0x{addr:x}',f'--stop-address=0x{stop:x}','work/libapp.so'
+                  ], text=True, errors='replace')
+              except subprocess.CalledProcessError as e:
+                  text=e.output or ''
+              out.append(f'===== {name} @0x{addr:x} =====\n{text}')
+          Path('reports/login-function-disassembly.txt').write_text('\n'.join(out), encoding='utf-8')
+          PY
+
+      - name: Summarize opcode-sized constants near verify xrefs
+        run: |
+          grep -Eai -B8 -A25 'CLIENT_GET_VERIFY|SERVER_SET_VERIFY|CLIENT_RET_ENCODE|CLIENT_LOGIN' reports/verify-string-xrefs.txt > reports/verify-focus.txt || true
+          wc -l reports/* || true
+
+      - name: Upload recovery report
+        uses: actions/upload-artifact@v4
+        with:
+          name: survival-heroes-login-verify-recovery
+          path: reports/
+          retention-days: 7
