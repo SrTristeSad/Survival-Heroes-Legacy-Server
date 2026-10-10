@@ -1,0 +1,102 @@
+name: Recover create role protocol
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  recover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install AArch64 tools
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq binutils-aarch64-linux-gnu
+      - name: Download archived client library
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euxo pipefail
+          mkdir -p client work/xapk work/apk reports
+          gh release download apk --pattern '*.xapk' --dir client
+          unzip -q "$(find client -type f -name '*.xapk' | head -n1)" -d work/xapk
+          unzip -q "$(find work/xapk -type f -name '*.apk' | head -n1)" 'lib/arm64-v8a/libapp.so' -d work/apk
+          cp work/apk/lib/arm64-v8a/libapp.so work/libapp.so
+      - name: Find create/select role evidence
+        run: |
+          strings -a -t x work/libapp.so > work/strings.txt
+          aarch64-linux-gnu-nm -D -n -C work/libapp.so > work/nm.txt || true
+          grep -Eai 'CLIENT_.*ROLE|SERVER_.*ROLE|CREATE_ROLE|CREATE ROLE|CreateRole|SELECT_ROLE|SELECT ROLE|SelectRole|ENTER_(GAME|WORLD)|on_.*role|role.*(succeed|success|fail)' work/strings.txt > reports/create-role-strings.txt || true
+          grep -Eai 'Game(Sender|Receiver).*Role|CreateRole|SelectRole|Enter(Game|World)|Role.*(Succeed|Success|Fail)' work/nm.txt > reports/create-role-symbols.txt || true
+          cat reports/create-role-symbols.txt
+      - name: Dump candidate native functions
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re, subprocess
+          out=[]
+          seen=set()
+          for line in Path('reports/create-role-symbols.txt').read_text(errors='replace').splitlines():
+              m=re.match(r'([0-9a-fA-F]+)\s+\w\s+(.*)', line)
+              if not m: continue
+              addr=int(m.group(1),16); name=m.group(2)
+              if addr in seen: continue
+              seen.add(addr)
+              start=max(0,addr-0x180); stop=addr+0x1800
+              try:
+                  text=subprocess.check_output([
+                      'aarch64-linux-gnu-objdump','-d','-C','--no-show-raw-insn',
+                      f'--start-address=0x{start:x}',f'--stop-address=0x{stop:x}','work/libapp.so'
+                  ],text=True,errors='replace')
+              except subprocess.CalledProcessError as e:
+                  text=e.output or ''
+              out.append(f'===== {name} @0x{addr:x} =====\n{text}')
+          Path('reports/create-role-functions.txt').write_text('\n'.join(out),encoding='utf-8')
+          PY
+      - name: Recover enum/string xrefs
+        run: |
+          aarch64-linux-gnu-readelf -SW work/libapp.so > work/sections.txt
+          aarch64-linux-gnu-objdump -d -C --no-show-raw-insn work/libapp.so > work/disasm.txt
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          sections=[]
+          for line in Path('work/sections.txt').read_text(errors='replace').splitlines():
+              m=re.match(r'\s*\[\s*\d+\]\s+(\S+)\s+\S+\s+([0-9a-fA-F]+)\s+([0-9a-fA-F]+)\s+([0-9a-fA-F]+)',line)
+              if m:
+                  name,addr,off,size=m.groups(); sections.append((int(addr,16),int(off,16),int(size,16)))
+          targets=[]
+          for line in Path('reports/create-role-strings.txt').read_text(errors='replace').splitlines():
+              m=re.match(r'\s*([0-9a-fA-F]+)\s+(.*)',line)
+              if not m: continue
+              foff=int(m.group(1),16); text=m.group(2); va=None
+              for addr,off,size in sections:
+                  if off <= foff < off+size:
+                      va=addr+(foff-off); break
+              if va is not None: targets.append((va,text))
+          lines=Path('work/disasm.txt').read_text(errors='replace').splitlines()
+          by_page={}
+          for i,line in enumerate(lines):
+              m=re.search(r'adrp\s+(x\d+),\s*([0-9a-fA-F]+)',line)
+              if m: by_page.setdefault(int(m.group(2),16),[]).append((i,m.group(1)))
+          out=[]
+          for va,text in targets[:200]:
+              page=va & ~0xfff; off=va & 0xfff
+              for i,reg in by_page.get(page,[]):
+                  for j in range(i+1,min(i+10,len(lines))):
+                      m=re.search(rf'add\s+{reg},\s*{reg},\s*#0x([0-9a-fA-F]+)',lines[j])
+                      if m and int(m.group(1),16)==off:
+                          out.append(f'===== {text} VA=0x{va:x} =====')
+                          out.extend(lines[max(0,i-50):min(len(lines),j+100)])
+                          break
+          Path('reports/create-role-xrefs.txt').write_text('\n'.join(out),encoding='utf-8')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: survival-heroes-create-role-recovery
+          path: reports/
+          retention-days: 7
