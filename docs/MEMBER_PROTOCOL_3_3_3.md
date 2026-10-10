@@ -1,33 +1,35 @@
-# Survival Heroes 3.3.3 member/login wire protocol
+# Protocolo membro/login do Survival Heroes 3.3.3
 
-This document contains only protocol details confirmed from the archived Android 3.3.3 client. Unknown field meanings are intentionally left unnamed rather than guessed.
+Este documento contém apenas detalhes confirmados a partir do cliente Android 3.3.3 arquivado. Campos ainda desconhecidos permanecem sem nome semântico em vez de receber rótulos por adivinhação.
 
-## Outer TCP framing
+## Framing TCP externo
 
-The old member/game TCP path uses `LenSplitProtocol`.
+O caminho antigo de membro/jogo usa `LenSplitProtocol`.
 
-`LenSplitProtocol::m_nProtocolSize` is `4`, and the receive routine interprets the first four bytes as the exact payload length.
+`LenSplitProtocol::m_nProtocolSize` vale `4`, e a rotina de recepção interpreta os quatro primeiros bytes como o tamanho exato do payload:
 
 ```text
 uint32_le payload_length
 byte      payload[payload_length]
 ```
 
-The first byte of each decoded payload is the old `GameReceiver` / `GameSender` opcode.
+O primeiro byte de cada payload decodificado é o opcode antigo de `GameReceiver` / `GameSender`.
 
-This framing is implemented by `internal/legacylogin.FrameWirePayload` and `ParseWireFrame`.
+Esse framing está implementado em `internal/legacylogin.FrameWirePayload` e `ParseWireFrame`.
 
-## Confirmed client-to-server handshake opcodes
+## Opcodes confirmados cliente → servidor
 
-The client enum/string table is zero-based, and multiple native packet builders independently confirm its numbering:
+| Opcode | Mensagem |
+|---:|---|
+| `0x00` | `CLIENT_GET_VERIFY` |
+| `0x01` | `CLIENT_RET_ENCODE` |
+| `0x02` | `CLIENT_LOGIN` |
+| `0x03` | `CLIENT_WORLD_INFO` |
+| `0x04` | `CLIENT_CHOOSE_ROLE` |
+| `0x05` | `CLIENT_CREATE_ROLE` |
+| `0x06` | `CLIENT_DELETE_ROLE` |
 
-| Opcode | Client message | Evidence |
-|---:|---|---|
-| `0x00` | `CLIENT_GET_VERIFY` | native sender emits exactly one payload byte `00` |
-| `0x01` | `CLIENT_RET_ENCODE` | zero-based enum between confirmed opcodes 0 and 2; body still under recovery |
-| `0x02` | `CLIENT_LOGIN` | recovered native login builder writes opcode `02` |
-
-The native `CLIENT_GET_VERIFY` sender passes payload length `1` to the game socket and writes `0x00` as the only payload byte. With `LenSplitProtocol`, its complete wire representation is therefore:
+`CLIENT_GET_VERIFY` possui payload de um único byte. Com o framing externo completo:
 
 ```text
 01 00 00 00  00
@@ -35,52 +37,53 @@ The native `CLIENT_GET_VERIFY` sender passes payload length `1` to the game sock
 payload_len  CLIENT_GET_VERIFY
 ```
 
-Later client packet builders provide additional cross-checks for the same zero-based table: observed opcodes `0x03`, `0x04`, `0x06`, `0x07`, `0x08`, `0x09`, and `0x0c` align with the following enum entries for world-info, choose-role, delete-role, select, speech, ready, and revive-role messages.
+## Opcodes confirmados servidor → cliente
 
-## Confirmed server-to-client opcodes
+A tabela de dispatch ARM64 de `GameReceiver` foi decodificada diretamente.
 
-The ARM64 `GameReceiver` jump table was decoded directly rather than inferred from string order.
-
-| Opcode | Handler |
+| Opcode | Handler/mensagem |
 |---:|---|
-| `0x01` | `SERVER_SET_VERIFY` / `GameReceiver::ServerSetVerify` |
-| `0x02` | `SERVER_SET_ENCODE` / `GameReceiver::ServerSetEncode` |
-| `0x04` | `SERVER_LOGIN_SUCCEED` / `GameReceiver::ServerLoginSucceed` |
-
-Opcode `0x03` dispatches to another handler whose role has not yet been named with enough confidence.
+| `0x01` | `SERVER_SET_VERIFY` |
+| `0x02` | `SERVER_SET_ENCODE` |
+| `0x03` | `SERVER_ERROR_CODE` |
+| `0x04` | `SERVER_LOGIN_SUCCEED` |
+| `0x05` | `SERVER_WORLD_INFO` |
+| `0x09` | `SERVER_PROPERTY_TABLE` |
+| `0x0A` | `SERVER_RECORD_TABLE` |
+| `0x0B` | `SERVER_ENTRY_SCENE` |
 
 ## `SERVER_SET_VERIFY` (`0x01`)
 
-The receiver enforces a minimum payload size of 13 bytes.
+O receiver exige no mínimo 13 bytes:
 
 ```text
-offset  size  type       meaning
+offset  size  tipo       significado
 0       1     uint8      opcode = 0x01
-1       4     uint32_le  field0 (meaning not yet confirmed)
+1       4     uint32_le  field0 (significado ainda não confirmado)
 5       4     uint32_le  verify_mode
-9       ...              mode-dependent data
+9       ...              dados dependentes do modo
 ```
 
-If `verify_mode == 1`, the receiver requires at least 25 bytes and consumes a 16-byte key beginning at offset 9.
+Se `verify_mode == 1`, o cliente exige pelo menos 25 bytes e consome uma chave de 16 bytes iniciando em offset 9.
 
-For modes other than 1, four bytes at offsets 9..12 are retained as zero padding by the current clean-room builder because the original receiver still enforces the 13-byte minimum.
+Para os demais modos, o builder atual mantém quatro bytes zero nos offsets 9..12 porque o receiver original ainda exige o mínimo de 13 bytes.
 
-Implemented by `legacylogin.BuildServerSetVerify`.
+Implementação: `legacylogin.BuildServerSetVerify`.
 
 ## `SERVER_SET_ENCODE` (`0x02`)
 
-The receiver requires a payload larger than `0x3d`, therefore at least 62 bytes, before emitting its `on_set_encode` event.
+O receiver exige payload maior que `0x3d`, portanto no mínimo 62 bytes, antes de emitir `on_set_encode`.
 
-The exact internal field grammar and the point at which its transform becomes active are still being recovered. The server must not invent this packet merely to advance the UI.
+Na rotina observada, os bytes após o opcode não são consumidos antes do callback. O servidor mantém um builder experimental de 62 bytes para testes controlados.
 
 ## `SERVER_LOGIN_SUCCEED` (`0x04`)
 
-The receiver requires at least `0x29` (41) bytes.
+O cliente exige no mínimo `0x29` (41) bytes.
 
-The fixed prefix contains the opcode followed by ten little-endian 32-bit slots:
+Prefixo fixo:
 
 ```text
-offset  size  type
+offset  size  tipo
 0       1     uint8      opcode = 0x04
 1       4     uint32_le  value0
 5       4     uint32_le  value1
@@ -90,30 +93,110 @@ offset  size  type
 21      4     uint32_le  value5
 25      4     uint32_le  value6
 29      4     uint32_le  value7
-33      4     uint32_le  value8 / fixed slot (semantic use still under review)
+33      4     uint32_le  value8
 37      4     uint32_le  role_count
 ```
 
-Role records begin at offset 41 when `role_count > 0`. Their grammar is not implemented yet.
+Os registros de personagem começam no offset 41 quando `role_count > 0`.
 
-`BuildServerLoginSuccessHeader` deliberately accepts only `role_count == 0` until those role records are recovered.
+Um `role_count=0` é válido e é usado no experimento atual para alcançar o caminho original de criação de personagem sem inventar dados proprietários.
 
-## Client login request
+## Registros de personagem
 
-The recovered raw `CLIENT_LOGIN` payload begins with opcode `0x02`, family `0x300`, and the padded account/password/login-string structure documented in `CLIENT_3_3_3_ANALYSIS.md`.
-
-The currently confirmed beginning of the old handshake is therefore:
+Cada personagem começa com:
 
 ```text
-client -> server  CLIENT_GET_VERIFY   opcode 0x00
-server -> client  SERVER_SET_VERIFY   opcode 0x01   # field semantics/order still being completed
-...
-client -> server  CLIENT_LOGIN        opcode 0x02   # later step; exact encode negotiation order still under recovery
-server -> client  SERVER_LOGIN_SUCCEED opcode 0x04  # after a successful login flow
+uint16 parameter_count
 ```
 
-`CLIENT_RET_ENCODE` (`0x01`) and `SERVER_SET_ENCODE` (`0x02`) clearly form part of the old encode-negotiation path, but their exact ordering and body grammar are intentionally not guessed yet.
+Depois vêm parâmetros tipados. Tags confirmadas:
 
-## Safety / privacy in the compatibility server
+| Tag | Valor no fio |
+|---:|---|
+| `2` | `uint32` |
+| `3` | `uint64` |
+| `4` | `uint32` |
+| `5` | `uint64` |
+| `6` | `uint32 byte_length` + string de bytes terminada em NUL |
+| `7` | `uint32 byte_length` + UTF-16LE terminado em `0x0000` |
+| `8` | dois `uint32` consecutivos |
 
-`cmd/member-server` now dispatches the real pre-login `LenSplitProtocol` frames and recognizes `CLIENT_GET_VERIFY`, `CLIENT_RET_ENCODE`, and `CLIENT_LOGIN`. Login framing is validated without logging or retaining account passwords, login tokens, or device identifier contents. Only lengths and non-secret protocol selectors required for reverse engineering are recorded.
+O encoder fica em `internal/legacylogin/role_record.go`.
+
+## `CLIENT_CREATE_ROLE` (`0x05`)
+
+Prefixo mínimo recuperado de 73 bytes:
+
+```text
+offset 0     uint8   opcode = 0x05
+offset 1     uint32  field0
+offset 5     uint16  name_utf16le[33]
+offset 71    uint16  extra_parameter_count
+offset 73    ...     parametros opcionais
+```
+
+## `CLIENT_CHOOSE_ROLE` (`0x04`)
+
+A requisição de escolha de personagem foi recuperada e já é validada pelo `member-server`. O identificador do personagem ocupa uma área UTF-16LE fixa e é seguido por `scene_info` como string C.
+
+## `WORLD_INFO`
+
+`CLIENT_WORLD_INFO` usa opcode `0x03`.
+
+`SERVER_WORLD_INFO` usa opcode `0x05` e a forma:
+
+```text
+uint8  opcode
+uint16 field0
+uint16 texto_utf16le[] + NUL
+```
+
+## Bootstrap de cena
+
+`SERVER_PROPERTY_TABLE` (`0x09`) e `SERVER_RECORD_TABLE` (`0x0A`) aceitam uma forma vazia válida:
+
+```text
+uint8  opcode
+uint16 count = 0
+```
+
+`SERVER_ENTRY_SCENE` (`0x0B`) foi recuperado e o cliente forma a identidade de cena usando dois `uint32` em ordem `Scene-Member`.
+
+A cena MOBA original confirmada no registro do cliente é:
+
+```text
+Scene = 119
+Member = 0
+chave = 119-0
+```
+
+## Fluxo experimental atual
+
+```text
+CLIENT_GET_VERIFY
+→ SERVER_SET_VERIFY
+
+CLIENT_RET_ENCODE
+→ SERVER_SET_ENCODE
+
+CLIENT_LOGIN
+→ SERVER_LOGIN_SUCCEED
+
+CLIENT_WORLD_INFO
+→ SERVER_WORLD_INFO
+
+CLIENT_CHOOSE_ROLE
+→ SERVER_PROPERTY_TABLE
+→ SERVER_RECORD_TABLE
+→ SERVER_ENTRY_SCENE 119-0
+```
+
+A emissão continua opt-in e pode ser ativada por:
+
+```bash
+sh scripts/enable-legacy-flow.sh
+```
+
+## Privacidade no servidor de compatibilidade
+
+`cmd/member-server` valida os pacotes reais do protocolo sem registrar conteúdo sensível de conta, senha, token ou identificador do dispositivo. Apenas tamanhos, seletores não secretos e metadados estruturais necessários para a pesquisa são registrados.
