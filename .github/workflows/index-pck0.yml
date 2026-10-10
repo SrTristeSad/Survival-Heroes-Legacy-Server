@@ -1,0 +1,135 @@
+name: Index Survival Heroes PCK0 resources
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'tools/pck0_extract.py'
+      - '.github/workflows/index-pck0.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  index:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download OBB from archived client
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euxo pipefail
+          mkdir -p client work/xapk reports extracted
+          gh release download apk --pattern '*.xapk' --dir client
+          XAPK="$(find client -type f -name '*.xapk' | head -n1)"
+          unzip -q "$XAPK" -d work/xapk
+          OBB="$(find work/xapk -type f -name '*.obb' | head -n1)"
+          test -n "$OBB"
+          echo "$OBB" > work/obb-path.txt
+          sha256sum "$OBB" > reports/obb-sha256.txt
+          ls -lh "$OBB" > reports/obb-file.txt
+
+      - name: Parse PCK0 index
+        run: |
+          set -euxo pipefail
+          OBB="$(cat work/obb-path.txt)"
+          python3 tools/pck0_extract.py info "$OBB" | tee reports/pck0-info.txt
+          python3 tools/pck0_extract.py list "$OBB" --tsv > reports/pck0-index.tsv
+          python3 tools/pck0_extract.py list "$OBB" --tsv \
+            --match '(\.lua$|\.luac$|server|login|account|network|(^|[\\/])net|protocol|match|battle|room|lobby|auth|gateway|socket|message|packet|role|query|connect)' \
+            > reports/pck0-interesting-index.tsv
+
+          python3 - <<'PY'
+          import collections, csv, pathlib
+          p = pathlib.Path('reports/pck0-index.tsv')
+          exts = collections.Counter()
+          roots = collections.Counter()
+          total = 0
+          with p.open(encoding='utf-8', errors='replace', newline='') as f:
+              for row in csv.DictReader(f, delimiter='\t'):
+                  total += 1
+                  path = row['path'].replace('\\', '/')
+                  suffix = pathlib.PurePosixPath(path).suffix.lower() or '<none>'
+                  exts[suffix] += 1
+                  roots[path.split('/', 1)[0].lower()] += 1
+          with open('reports/pck0-extension-summary.txt', 'w', encoding='utf-8') as out:
+              out.write(f'total={total}\n\n# extensions\n')
+              for ext, n in exts.most_common():
+                  out.write(f'{n}\t{ext}\n')
+              out.write('\n# roots\n')
+              for root, n in roots.most_common():
+                  out.write(f'{n}\t{root}\n')
+          PY
+
+      - name: Extract only analysis candidates temporarily
+        shell: bash
+        run: |
+          set -euxo pipefail
+          OBB="$(cat work/obb-path.txt)"
+          REGEX='(\.lua$|\.luac$|server|login|account|network|(^|[\\/])net|protocol|match|battle|room|lobby|auth|gateway|socket|message|packet|role|query|connect)'
+          python3 tools/pck0_extract.py extract "$OBB" extracted --match "$REGEX" --limit 2500 --verbose \
+            > reports/extraction-log.txt 2> reports/extraction-errors.txt || true
+          find extracted -type f -printf '%p\t%s\n' | sort > reports/extracted-candidates.txt
+
+      - name: Produce text-only protocol clues
+        shell: bash
+        run: |
+          set -euxo pipefail
+          : > reports/resource-protocol-clues.txt
+          : > reports/resource-url-clues.txt
+          : > reports/lua-like-files.txt
+
+          while IFS= read -r -d '' f; do
+            rel="${f#extracted/}"
+            case "$f" in
+              *.lua|*.luac|*.ini|*.cfg|*.conf|*.xml|*.json|*.txt|*.csv|*.dat|*.bytes)
+                echo "$rel" >> reports/lua-like-files.txt
+                ;;
+            esac
+
+            size=$(stat -c %s "$f")
+            if [ "$size" -gt 8388608 ]; then
+              continue
+            fi
+
+            hits=$(strings -a -n 5 "$f" 2>/dev/null | \
+              grep -Eai 'https?://|wss?://|udp://|tcp://|server|login|account|network|protocol|match|battle|room|lobby|auth|gateway|socket|packet|message|msgid|cmdid|role|query|connect|kcp|reliable|session|token|issuer|gameid' \
+              | head -n 120 || true)
+            if [ -n "$hits" ]; then
+              {
+                echo
+                echo "===== $rel ====="
+                printf '%s\n' "$hits"
+              } >> reports/resource-protocol-clues.txt
+            fi
+          done < <(find extracted -type f -print0)
+
+          grep -Eaio 'https?://[^[:space:]"<>]+' reports/resource-protocol-clues.txt | sort -u > reports/resource-url-clues.txt || true
+
+          # Do not upload extracted proprietary resources; reports only.
+          rm -rf extracted
+
+      - name: Validate first known record extraction
+        run: |
+          set -euxo pipefail
+          OBB="$(cat work/obb-path.txt)"
+          mkdir -p sample
+          python3 tools/pck0_extract.py extract "$OBB" sample --match '^res[\\/]action[\\/]npc[\\/]dropitem[\\/]item_amulet_001[\\/]action\.ini$' --limit 1 --verbose \
+            > reports/sample-extract-log.txt 2> reports/sample-extract-error.txt || true
+          if find sample -type f -print -quit | grep -q .; then
+            find sample -type f -exec file {} \; > reports/sample-file.txt
+            find sample -type f -exec sha256sum {} \; > reports/sample-sha256.txt
+            find sample -type f -exec wc -c {} \; > reports/sample-size.txt
+          fi
+          rm -rf sample
+
+      - name: Upload analysis reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: survival-heroes-pck0-index
+          path: reports/
+          retention-days: 7
