@@ -1,0 +1,47 @@
+name: Extract scene registry metadata
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/extract-scene-registry.yml'
+      - 'docs/SCENE_REGISTRY_RECOVERY.md'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  extract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download archived client
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euxo pipefail
+          mkdir -p client work/xapk out
+          gh release download apk --pattern '*.xapk' --dir client
+          unzip -q "$(find client -type f -name '*.xapk' | head -n1)" -d work/xapk
+          OBB="$(find work/xapk -type f -name '*.obb' | head -n1)"
+          test -n "$OBB"
+          python3 tools/pck0_extract.py extract "$OBB" out \
+            --match 'res\\share\\(scenes\.ini|rule\\scene_group\.xml|scene\\(moba_chiji|moba_chiji_local|moba_newplayer|moba_xunlian|level02|demo_fyn|scene_test|scene_test10)\.xml|scene\\creator\\npc_stagecreator\\scene_data\.xml)$' \
+            --verbose
+      - name: Make textual report
+        run: |
+          mkdir -p reports
+          find out -type f -print | sort > reports/files.txt
+          : > reports/scene-registry.txt
+          while IFS= read -r f; do
+            printf '\n===== %s =====\n' "$f" >> reports/scene-registry.txt
+            cat "$f" >> reports/scene-registry.txt
+            printf '\n' >> reports/scene-registry.txt
+          done < reports/files.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: survival-heroes-scene-registry
+          path: reports/
+          retention-days: 7
