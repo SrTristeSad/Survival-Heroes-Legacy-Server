@@ -1,5 +1,6 @@
 name: Recover member login response flow
 
+# Analysis-only workflow for the archived tester-supplied 3.3.3 client.
 on:
   push:
     branches: [main]
