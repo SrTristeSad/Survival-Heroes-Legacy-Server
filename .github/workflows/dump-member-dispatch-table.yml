@@ -1,0 +1,70 @@
+name: Dump legacy member dispatch table
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/dump-member-dispatch-table.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  dump:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install tools
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq binutils-aarch64-linux-gnu
+      - name: Download libapp
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euxo pipefail
+          mkdir -p client work/xapk work/apk reports
+          gh release download apk --pattern '*.xapk' --dir client
+          unzip -q "$(find client -type f -name '*.xapk' | head -n1)" -d work/xapk
+          unzip -q "$(find work/xapk -type f -name '*.apk' | head -n1)" 'lib/arm64-v8a/libapp.so' -d work/apk
+      - name: Dump switch table and protocol classes
+        run: |
+          LIB=work/apk/lib/arm64-v8a/libapp.so
+          aarch64-linux-gnu-objdump -s --start-address=0x248fa00 --stop-address=0x248fba0 "$LIB" > reports/dispatch-table.txt
+          aarch64-linux-gnu-nm -D -n -C "$LIB" | grep -Eai 'Protocol|Split|Encrypt|SocketProtocol' > reports/protocol-symbols.txt || true
+          strings -a -t x "$LIB" | grep -Eai 'Protocol|SplitProtocol|EncryptProtocol|LenSplit' > reports/protocol-strings.txt || true
+          aarch64-linux-gnu-objdump -d -C --no-show-raw-insn --start-address=0x1e6b000 --stop-address=0x1e71800 "$LIB" > reports/network-connect-send.txt
+      - name: Decode receiver table
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re, subprocess
+          lib='work/apk/lib/arm64-v8a/libapp.so'
+          raw=subprocess.check_output(['aarch64-linux-gnu-objcopy','-O','binary','--only-section=.rodata',lib,'/dev/stdout']) if False else None
+          # Use readelf to locate .rodata file offset/address, then read table directly.
+          sec=subprocess.check_output(['aarch64-linux-gnu-readelf','-SW',lib],text=True)
+          m=re.search(r'\[\s*\d+\]\s+\.rodata\s+PROGBITS\s+([0-9a-fA-F]+)\s+([0-9a-fA-F]+)\s+([0-9a-fA-F]+)',sec)
+          if not m:
+              raise SystemExit('rodata section not found')
+          vaddr=int(m.group(1),16); foff=int(m.group(2),16)
+          table=0x248fa00
+          with open(lib,'rb') as f:
+              f.seek(foff + (table-vaddr))
+              data=f.read(0x196)
+          base=0x6ff964
+          rows=[]
+          for opcode in range(min(203,len(data)//2)):
+              v=int.from_bytes(data[opcode*2:opcode*2+2],'little',signed=True)
+              target=base + v*4
+              rows.append(f'{opcode:3d} 0x{opcode:02x} entry={v:6d} target=0x{target:x}')
+          Path('reports/dispatch-decoded.txt').write_text('\n'.join(rows)+'\n')
+          for needle in (0x6fff48,0x6fff0c,0x6fff34,0x6fff20):
+              hits=[r for r in rows if f'target=0x{needle:x}' in r]
+              print(hex(needle), *hits, sep='\n  ')
+          PY
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: survival-heroes-member-dispatch-table
+          path: reports/
+          retention-days: 7
