@@ -35,6 +35,11 @@ type verifyReplyConfig struct {
 	SendWorldInfo    bool
 	WorldInfoField0  uint16
 	WorldInfoText    string
+	SendSceneTables  bool
+	SendEntryScene   bool
+	EntrySceneField0 uint32
+	EntrySceneA      uint32
+	EntrySceneB      uint32
 	Packet           legacylogin.SetVerifyPacket
 }
 
@@ -81,12 +86,30 @@ func loadVerifyReplyConfig() (verifyReplyConfig, error) {
 	cfg.SendLoginSuccess = envBool("MEMBER_SEND_LOGIN_SUCCESS", false)
 	cfg.SendWorldInfo = envBool("MEMBER_SEND_WORLD_INFO", false)
 	cfg.WorldInfoText = os.Getenv("MEMBER_WORLD_INFO_TEXT")
+	cfg.SendSceneTables = envBool("MEMBER_SEND_SCENE_TABLES", false)
+	cfg.SendEntryScene = envBool("MEMBER_SEND_ENTRY_SCENE", false)
 
 	worldField, err := envUint16("MEMBER_WORLD_INFO_FIELD0", 0)
 	if err != nil {
 		return cfg, err
 	}
 	cfg.WorldInfoField0 = worldField
+
+	entryField, err := envUint32("MEMBER_ENTRY_SCENE_FIELD0", 0)
+	if err != nil {
+		return cfg, err
+	}
+	entryA, err := envUint32("MEMBER_ENTRY_SCENE_A", 119)
+	if err != nil {
+		return cfg, err
+	}
+	entryB, err := envUint32("MEMBER_ENTRY_SCENE_B", 0)
+	if err != nil {
+		return cfg, err
+	}
+	cfg.EntrySceneField0 = entryField
+	cfg.EntrySceneA = entryA
+	cfg.EntrySceneB = entryB
 
 	if !cfg.Enabled {
 		return cfg, nil
@@ -271,6 +294,41 @@ func sendWorldInfo(conn net.Conn, remote string, cfg verifyReplyConfig) error {
 	return nil
 }
 
+func sendSceneTables(conn net.Conn, remote string) error {
+	property := legacylogin.BuildEmptyServerPropertyTable()
+	propertyWire, err := writeFramedPayload(conn, property)
+	if err != nil {
+		return err
+	}
+	record := legacylogin.BuildEmptyServerRecordTable()
+	recordWire, err := writeFramedPayload(conn, record)
+	if err != nil {
+		return err
+	}
+	log.Printf(
+		"member %s: sent experimental empty SERVER_PROPERTY_TABLE and SERVER_RECORD_TABLE wire_bytes=%d/%d",
+		remote, propertyWire, recordWire,
+	)
+	return nil
+}
+
+func sendEntryScene(conn net.Conn, remote string, cfg verifyReplyConfig) error {
+	payload := legacylogin.BuildServerEntrySceneZeroProperties(
+		cfg.EntrySceneField0,
+		cfg.EntrySceneA,
+		cfg.EntrySceneB,
+	)
+	wireBytes, err := writeFramedPayload(conn, payload)
+	if err != nil {
+		return err
+	}
+	log.Printf(
+		"member %s: sent experimental SERVER_ENTRY_SCENE key=%d-%d field0=%d properties=0 payload_bytes=%d wire_bytes=%d",
+		remote, cfg.EntrySceneA, cfg.EntrySceneB, cfg.EntrySceneField0, len(payload), wireBytes,
+	)
+	return nil
+}
+
 func handle(conn net.Conn, verifyCfg verifyReplyConfig) {
 	remote := conn.RemoteAddr().String()
 	defer conn.Close()
@@ -363,6 +421,18 @@ func handle(conn net.Conn, verifyCfg verifyReplyConfig) {
 				"member %s: CLIENT_CHOOSE_ROLE wire_bytes=%d role_utf16_units=%d scene_info_bytes=%d payload_bytes=%d",
 				remote, wireBytes, meta.RoleUTF16Units, meta.SceneInfoBytes, meta.PayloadBytes,
 			)
+			if verifyCfg.SendSceneTables || verifyCfg.SendEntryScene {
+				if err := sendSceneTables(conn, remote); err != nil {
+					log.Printf("member %s: scene table bootstrap failed: %v", remote, err)
+					return
+				}
+			}
+			if verifyCfg.SendEntryScene {
+				if err := sendEntryScene(conn, remote, verifyCfg); err != nil {
+					log.Printf("member %s: SERVER_ENTRY_SCENE write failed: %v", remote, err)
+					return
+				}
+			}
 
 		case legacylogin.ClientCreateRoleOpcode:
 			meta, parseErr := legacylogin.InspectCreateRoleRequest(payload)
@@ -397,8 +467,18 @@ func main() {
 	}
 	defer ln.Close()
 	log.Printf(
-		"legacy member/login compatibility server listening on %s (set_verify=%t set_encode=%t login_success=%t world_info=%t mode=%d field0=%d)",
-		addr, verifyCfg.Enabled, verifyCfg.SendSetEncode, verifyCfg.SendLoginSuccess, verifyCfg.SendWorldInfo, verifyCfg.Packet.Mode, verifyCfg.Packet.Field0,
+		"legacy member/login compatibility server listening on %s (set_verify=%t set_encode=%t login_success=%t world_info=%t scene_tables=%t entry_scene=%t scene=%d-%d mode=%d field0=%d)",
+		addr,
+		verifyCfg.Enabled,
+		verifyCfg.SendSetEncode,
+		verifyCfg.SendLoginSuccess,
+		verifyCfg.SendWorldInfo,
+		verifyCfg.SendSceneTables,
+		verifyCfg.SendEntryScene,
+		verifyCfg.EntrySceneA,
+		verifyCfg.EntrySceneB,
+		verifyCfg.Packet.Mode,
+		verifyCfg.Packet.Field0,
 	)
 	for {
 		conn, err := ln.Accept()
