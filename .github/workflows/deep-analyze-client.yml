@@ -1,0 +1,128 @@
+name: Deep analyze Survival Heroes client
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/deep-analyze-client.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download and unpack client
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euxo pipefail
+          mkdir -p client work/xapk work/apk analysis
+          gh release download apk --pattern '*.xapk' --dir client
+          XAPK="$(find client -maxdepth 1 -type f -name '*.xapk' | head -n1)"
+          sha256sum "$XAPK" > analysis/client-sha256.txt
+          unzip -q "$XAPK" -d work/xapk
+          cp work/xapk/manifest.json analysis/xapk-manifest.json 2>/dev/null || true
+          APK="$(find work/xapk -type f -name '*.apk' | head -n1)"
+          unzip -q "$APK" -d work/apk
+
+      - name: Extract configuration files
+        run: |
+          set -euxo pipefail
+          mkdir -p analysis/config-files
+          for f in config.ini httpdns.ini version.ini server_notice.ini server_list.ini platform_info.ini patchbase.ini updatepackages.ini packages.ini device.ini ResFileList.dat localfile.files; do
+            src="work/apk/assets/$f"
+            if [ -f "$src" ]; then
+              cp "$src" "analysis/config-files/$f"
+            fi
+          done
+          {
+            echo '# APK metadata tools'
+            if command -v aapt >/dev/null 2>&1; then
+              aapt dump badging "$(find work/xapk -type f -name '*.apk' | head -n1)" || true
+            fi
+            echo
+            echo '# Selected config files'
+            for f in analysis/config-files/*.ini analysis/config-files/ResFileList.dat; do
+              [ -f "$f" ] || continue
+              echo
+              echo "===== $f ====="
+              cat "$f" || true
+            done
+          } > analysis/config-report.txt
+
+      - name: Analyze native game library symbols
+        shell: bash
+        run: |
+          set -euxo pipefail
+          LIB="work/apk/lib/arm64-v8a/libapp.so"
+          file "$LIB" > analysis/libapp-file.txt
+          readelf -h "$LIB" > analysis/libapp-elf-header.txt || true
+          readelf -d "$LIB" > analysis/libapp-dynamic.txt || true
+          readelf -S "$LIB" > analysis/libapp-sections.txt || true
+
+          (nm -D -C "$LIB" 2>/dev/null || true) | \
+            grep -Eai 'network|server|udp|tcp|packet|message|login|auth|match|battle|room|lobby|gateway|socket|connect|protocol|host|session|account|role|zone|scene' \
+            | sort -u > analysis/libapp-network-symbols.txt || true
+
+          strings -a -n 6 "$LIB" | grep '^_Z' | c++filt 2>/dev/null | \
+            grep -Eai 'network|server|udp|tcp|packet|message|login|auth|match|battle|room|lobby|gateway|socket|connect|protocol|host|session|account|role|zone|scene' \
+            | sort -u > analysis/libapp-demangled-string-symbols.txt || true
+
+          strings -a -n 5 "$LIB" | \
+            grep -Eai 'server_list|server_notice|\.ini|https?://|wss?://|udp://|tcp://|login|gateway|match|battle|room|packet|message|msgid|cmdid|protocol|connectserver|disconnectserver' \
+            | sort -u | head -n 12000 > analysis/libapp-protocol-strings.txt || true
+
+          strings -a -n 6 "$LIB" | grep -Eai 'cocos2d|cocos|lua_|tolua|spine|fairygui|quick-cocos|dragonbones|sproto|flatbuffer|protobuf|enet|raknet|kcp' \
+            | sort -u | head -n 5000 > analysis/engine-clues.txt || true
+
+      - name: Inspect OBB container
+        shell: bash
+        run: |
+          set -euxo pipefail
+          OBB="$(find work/xapk -type f -name '*.obb' | head -n1)"
+          file "$OBB" > analysis/obb-file.txt
+          xxd -l 1024 "$OBB" > analysis/obb-header.hex
+          dd if="$OBB" of=analysis/obb-first-16m.bin bs=1M count=16 status=none
+          strings -a -n 7 analysis/obb-first-16m.bin | head -n 20000 > analysis/obb-first-16m-strings.txt || true
+          strings -a -n 7 "$OBB" | \
+            grep -Eai 'https?://|wss?://|udp://|tcp://|server|login|gateway|match|battle|room|\.ini|\.lua|\.json|\.xml|\.pak|\.bundle|\.png|\.dds|\.plist|\.bytes' \
+            | head -n 12000 > analysis/obb-interesting-strings.txt || true
+          rm -f analysis/obb-first-16m.bin
+
+      - name: Build deep summary
+        run: |
+          {
+            echo '# Deep static analysis - Survival Heroes 3.3.3'
+            echo
+            echo '## Config report'
+            sed -n '1,500p' analysis/config-report.txt
+            echo
+            echo '## libapp engine clues'
+            sed -n '1,300p' analysis/engine-clues.txt
+            echo
+            echo '## libapp network symbols'
+            sed -n '1,600p' analysis/libapp-network-symbols.txt
+            echo
+            echo '## Demangled network-like symbols'
+            sed -n '1,600p' analysis/libapp-demangled-string-symbols.txt
+            echo
+            echo '## Protocol/network strings'
+            sed -n '1,700p' analysis/libapp-protocol-strings.txt
+            echo
+            echo '## OBB header'
+            cat analysis/obb-file.txt
+            sed -n '1,80p' analysis/obb-header.hex
+          } > analysis/DEEP-REPORT.md
+
+      - name: Upload deep analysis
+        uses: actions/upload-artifact@v4
+        with:
+          name: survival-heroes-3.3.3-deep-analysis
+          path: analysis/
+          retention-days: 7
