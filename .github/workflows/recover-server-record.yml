@@ -1,0 +1,99 @@
+name: Recover legacy server-record grammar
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/recover-server-record.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  recover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq binutils-aarch64-linux-gnu python3-pip
+          python3 -m pip install --quiet pyelftools
+      - name: Download libapp
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euxo pipefail
+          mkdir -p client work/xapk work/apk reports
+          gh release download apk --pattern '*.xapk' --dir client
+          unzip -q "$(find client -type f -name '*.xapk' | head -n1)" -d work/xapk
+          unzip -q "$(find work/xapk -type f -name '*.apk' | head -n1)" 'lib/arm64-v8a/libapp.so' -d work/apk
+      - name: Resolve exact literals and nearby symbols
+        shell: bash
+        run: |
+          LIB=work/apk/lib/arm64-v8a/libapp.so
+          python3 - <<'PY'
+          from pathlib import Path
+          from elftools.elf.elffile import ELFFile
+
+          lib=Path('work/apk/lib/arm64-v8a/libapp.so')
+          targets=[0x2489d88,0x2488580,0x24b3240,0x24b3268,0x24b3280,0x24b3300,0x24b3338,0x24b3350,0x24b3360,0x24b3410]
+          rows=[]
+          with lib.open('rb') as f:
+              elf=ELFFile(f)
+              for va in targets:
+                  hit=None
+                  for sec in elf.iter_sections():
+                      start=sec['sh_addr']; end=start+sec['sh_size']
+                      if start <= va < end:
+                          off=sec['sh_offset']+(va-start)
+                          f.seek(off)
+                          blob=f.read(256)
+                          nul=blob.find(b'\0')
+                          s=blob[:nul if nul>=0 else len(blob)]
+                          hit=(sec.name,off,s)
+                          break
+                  if hit is None:
+                      rows.append(f'0x{va:x}\tNOT_MAPPED')
+                  else:
+                      sec,off,s=hit
+                      rows.append(f'0x{va:x}\t{sec}\tfile+0x{off:x}\t{s!r}')
+          Path('reports/exact-literals.txt').write_text('\n'.join(rows)+'\n')
+          PY
+          cat reports/exact-literals.txt
+          aarch64-linux-gnu-nm -D -n -C "$LIB" > reports/nm-dynamic.txt || true
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          targets=[0x83b720,0xa4fe68,0x245cfc8,0x245c384,0x8fb314]
+          syms=[]
+          for line in Path('reports/nm-dynamic.txt').read_text(errors='replace').splitlines():
+              m=re.match(r'([0-9a-fA-F]+)\s+\w\s+(.*)',line)
+              if m: syms.append((int(m.group(1),16),m.group(2)))
+          out=[]
+          for t in targets:
+              before=[s for s in syms if s[0] <= t]
+              after=[s for s in syms if s[0] > t]
+              out.append(f'TARGET 0x{t:x}')
+              for a,n in before[-5:]: out.append(f'  before 0x{a:x} {n}')
+              for a,n in after[:5]: out.append(f'  after  0x{a:x} {n}')
+          Path('reports/nearby-symbols.txt').write_text('\n'.join(out)+'\n')
+          PY
+          cat reports/nearby-symbols.txt
+      - name: Disassemble helper calls used by LoadServerList
+        run: |
+          LIB=work/apk/lib/arm64-v8a/libapp.so
+          : > reports/helpers-disassembly.txt
+          for range in '0x83b650 0x83b850' '0xa4fd00 0xa50050' '0x8fb150 0x8fb650' '0x245c250 0x245d150'; do
+            set -- $range
+            echo "===== $1..$2 =====" >> reports/helpers-disassembly.txt
+            aarch64-linux-gnu-objdump -d -C --no-show-raw-insn --start-address="$1" --stop-address="$2" "$LIB" >> reports/helpers-disassembly.txt || true
+          done
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: survival-heroes-server-record-grammar
+          path: reports/
+          retention-days: 7
