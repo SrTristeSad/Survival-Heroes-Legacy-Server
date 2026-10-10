@@ -116,9 +116,9 @@ func (b ResponseBody) MarshalBinary() ([]byte, error) {
 // MarshalUncompressedEnvelope reproduces the framing observed in
 // CPackageHeadSocket::GetRecvInfo:
 //
-//   uint32 remaining_length  // bytes after this field
-//   uint32 unpacked_size     // zero means payload is stored/raw
-//   byte[] payload
+//	uint32 remaining_length  // bytes after this field
+//	uint32 unpacked_size     // zero means payload is stored/raw
+//	byte[] payload
 //
 // GetRecvInfo waits for remaining_length+4 total bytes. For an uncompressed
 // response remaining_length is 4+len(payload).
