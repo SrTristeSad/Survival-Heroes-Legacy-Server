@@ -1,0 +1,100 @@
+name: Trace selected server field semantics
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/xref-selected-server.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  xref:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install tools
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq binutils-aarch64-linux-gnu
+      - name: Download libapp
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euxo pipefail
+          mkdir -p client work/xapk work/apk reports
+          gh release download apk --pattern '*.xapk' --dir client
+          unzip -q "$(find client -type f -name '*.xapk' | head -n1)" -d work/xapk
+          unzip -q "$(find work/xapk -type f -name '*.apk' | head -n1)" 'lib/arm64-v8a/libapp.so' -d work/apk
+      - name: Cross-reference selected server literals
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          from collections import deque
+          import re, subprocess
+
+          lib='work/apk/lib/arm64-v8a/libapp.so'
+          wanted={
+              'server_addr','server_id','server_port','server_district','server_issuer',
+              'servername','serverdistrict','serverId','ServerID','player_serverid',
+              'server_recommend','server_recommand'
+          }
+          strings=subprocess.check_output(['strings','-a','-t','x',lib],text=True,errors='replace').splitlines()
+          targets={}
+          for line in strings:
+              m=re.match(r'\s*([0-9a-fA-F]+)\s+(.*)$',line)
+              if not m: continue
+              s=m.group(2)
+              if s in wanted:
+                  targets[int(m.group(1),16)] = s
+          Path('reports/selected-server-literals.txt').write_text('\n'.join(f'0x{k:x}\t{v}' for k,v in sorted(targets.items()))+'\n')
+
+          p=subprocess.Popen(['aarch64-linux-gnu-objdump','-d','-C','--no-show-raw-insn',lib],stdout=subprocess.PIPE,text=True,errors='replace',bufsize=1)
+          prev=deque(maxlen=90)
+          regs={}
+          captures=[]
+          active=[]
+          lineno=0
+          for line in p.stdout:
+              lineno += 1
+              # Append line to active post-hit captures.
+              for c in active:
+                  c['lines'].append(line.rstrip('\n'))
+                  c['remain'] -= 1
+              done=[c for c in active if c['remain'] <= 0]
+              if done:
+                  for c in done:
+                      captures.append(c)
+                      active.remove(c)
+
+              ma=re.search(r'^\s*([0-9a-fA-F]+):\s+adrp\s+(x\d+),\s*([0-9a-fA-F]+)',line)
+              if ma:
+                  regs[ma.group(2)] = (int(ma.group(3),16), lineno)
+              mb=re.search(r'^\s*([0-9a-fA-F]+):\s+add\s+(x\d+),\s*(x\d+),\s*#0x([0-9a-fA-F]+)',line)
+              if mb and mb.group(3) in regs:
+                  page,seen=regs[mb.group(3)]
+                  if lineno-seen <= 24:
+                      va=page+int(mb.group(4),16)
+                      if va in targets:
+                          header=f'===== {targets[va]} target=0x{va:x} pc=0x{int(mb.group(1),16):x} ====='
+                          initial=[header] + list(prev) + [line.rstrip('\n')]
+                          active.append({'lines':initial,'remain':120})
+              prev.append(line.rstrip('\n'))
+          p.wait()
+          captures.extend(active)
+          out=[]
+          for c in captures:
+              out.extend(c['lines']); out.append('')
+          Path('reports/selected-server-xrefs.txt').write_text('\n'.join(out),encoding='utf-8')
+          Path('reports/selected-server-summary.txt').write_text('\n'.join(c['lines'][0] for c in captures)+'\n')
+          PY
+          cat reports/selected-server-literals.txt
+          cat reports/selected-server-summary.txt
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: survival-heroes-selected-server-xrefs
+          path: reports/
+          retention-days: 7
