@@ -1,47 +1,27 @@
-# Survival Heroes 3.3.3 create-role request
+# Requisição `CREATE_ROLE` do Survival Heroes 3.3.3
 
-The archived client's `GameSender::CreateRole` path has been recovered far enough to validate the fixed request prefix without guessing game semantics.
+O caminho `GameSender::CreateRole` do cliente arquivado foi recuperado o suficiente para confirmar o prefixo fixo da requisição sem adivinhar o significado dos campos.
 
-## Fixed request
+## Estrutura fixa
 
-The request uses client opcode `0x05` and has a minimum fixed size of 73 bytes:
+A requisição usa opcode de cliente `0x05` e possui tamanho fixo mínimo de 73 bytes:
 
 ```text
 offset 0     uint8   opcode = 0x05
 offset 1     uint32  field0
 offset 5     uint16  name_utf16le[33]
 offset 71    uint16  extra_parameter_count
-offset 73    ...     optional generic parameters
+offset 73    ...     parametros genericos opcionais
 ```
 
-The name area is produced from the wide-string argument and is capped to 33 UTF-16 code units in the released ARM64 client. The second script-side argument is required to be the client's wide-string variant type (`7`).
+A área do nome é gerada a partir do argumento wide-string e limitada a 33 unidades UTF-16 no cliente ARM64 analisado. O segundo argumento do lado de script precisa usar o tipo wide-string `7` do cliente.
 
-The first argument is converted to a 32-bit value and stored at offset `1`. Its higher-level meaning is intentionally left unnamed until a caller or data-flow path proves it.
+O primeiro argumento é convertido para 32 bits e armazenado no offset `1`. Seu significado de alto nível permanece intencionalmente sem nome até que um caller ou caminho de dados prove sua função.
 
-The sender writes `argument_count - 2` into the 16-bit extra-parameter count. Optional extra parameters are serialized after the 73-byte fixed prefix by a shared generic parameter helper whose complete wire grammar is still being mapped.
+O sender grava `argument_count - 2` no contador de parâmetros extras de 16 bits. Parâmetros adicionais são serializados após o prefixo fixo de 73 bytes pela mesma gramática genérica de parâmetros usada em outras partes do protocolo.
 
-`internal/legacylogin/create_role.go` validates the fixed prefix and reports only structural metadata; `cmd/member-server` deliberately does not log the requested character name itself.
+`internal/legacylogin/create_role.go` valida esse prefixo. `cmd/member-server` registra apenas metadados estruturais e não imprime o nome escolhido pelo jogador.
 
-## Message-table context
+## Situação atual
 
-The original client message table confirms this early sequence:
-
-```text
-client 0x00 CLIENT_GET_VERIFY
-client 0x01 CLIENT_RET_ENCODE
-client 0x02 CLIENT_LOGIN
-client 0x03 CLIENT_WORLD_INFO
-client 0x04 CLIENT_CHOOSE_ROLE
-client 0x05 CLIENT_CREATE_ROLE
-client 0x06 CLIENT_DELETE_ROLE
-
-server 0x01 SERVER_SET_VERIFY
-server 0x02 SERVER_SET_ENCODE
-server 0x03 SERVER_ERROR_CODE
-server 0x04 SERVER_LOGIN_SUCCEED
-server 0x05 SERVER_WORLD_INFO
-```
-
-There is no create-role-specific success message in the recovered server message table. Failures can use the generic `SERVER_ERROR_CODE`; successful creation/selection therefore continues through the normal role/world-entry flow rather than a dedicated `SERVER_CREATE_ROLE_SUCCESS` packet.
-
-The next clean-room target is `CLIENT_CHOOSE_ROLE` and the corresponding `SERVER_WORLD_INFO` payload.
+A etapa seguinte, `CLIENT_CHOOSE_ROLE`, também já foi recuperada. Depois da escolha de personagem, o fluxo experimental segue por `WORLD_INFO`, tabelas iniciais e `SERVER_ENTRY_SCENE`.
