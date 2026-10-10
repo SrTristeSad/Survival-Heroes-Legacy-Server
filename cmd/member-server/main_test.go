@@ -48,6 +48,33 @@ func runRead(t *testing.T, wire []byte) loginReadResult {
 	return got
 }
 
+func TestReadMemberFrameGetVerify(t *testing.T) {
+	wire, err := legacylogin.FrameWirePayload(legacylogin.BuildClientGetVerify())
+	if err != nil {
+		t.Fatal(err)
+	}
+	server, client := net.Pipe()
+	defer server.Close()
+	defer client.Close()
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := client.Write(wire)
+		done <- err
+	}()
+
+	payload, consumed, err := readMemberFrame(server)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if consumed != len(wire) || len(payload) != 1 || payload[0] != legacylogin.ClientGetVerifyOpcode {
+		t.Fatalf("consumed=%d wire=%d payload=%x", consumed, len(wire), payload)
+	}
+}
+
 func TestReadLoginPacketLenSplit(t *testing.T) {
 	payload := testLoginPayload(t)
 	wire, err := legacylogin.FrameWirePayload(payload)
