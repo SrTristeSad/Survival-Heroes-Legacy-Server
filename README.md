@@ -1,48 +1,59 @@
 # Survival Heroes Legacy Server
 
-Clean-room community server reimplementation for preserving **Survival Heroes** multiplayer after shutdown.
+Reimplementação comunitária e independente do servidor de **Survival Heroes**, criada para preservação e para permitir que clientes antigos voltem a se conectar sem depender da infraestrutura oficial encerrada.
 
-> Status: **Phase 2 / original 3.3.3 bootstrap, server-list grammar and member-login request framing recovered.** The client can now be directed through the original server-selection path to a compatibility member service. The server-side login response and later lobby/battle protocols are still being recovered.
+> **Status atual:** a base de compatibilidade do cliente Android **3.3.3** já está bem avançada. O bootstrap de servidores, enquadramento TCP, login, criação/seleção de personagem, `WORLD_INFO`, tabelas iniciais e a chave de entrada de cena foram recuperados. O primeiro mapa MOBA conhecido pelo cliente foi identificado como **`119-0`**. Ainda falta confirmar esse fluxo completo em um APK de teste apontado para a VPS e, depois disso, reconstruir lobby, salas e protocolo de batalha.
 
-## Goals
+## Objetivos
 
-- Target the final known Android client line, starting with **3.3.3**.
-- Reimplement server behavior from observations of the client; do not distribute proprietary game assets.
-- Prioritize real players; bots, if implemented later, must be explicit and optional.
-- Make self-hosting simple on a small VPS/aaPanel using Docker Compose.
-- Document the protocol so preservation does not depend on one person.
+- Usar como alvo principal a linha final conhecida do cliente Android, começando pela **3.3.3**.
+- Reimplementar o comportamento do servidor a partir da análise do cliente, sem distribuir código-fonte original do servidor nem arquivos proprietários do jogo.
+- Priorizar partidas entre jogadores reais; bots, caso sejam adicionados no futuro, devem ser opcionais e claramente identificados.
+- Facilitar hospedagem própria em VPS pequena/aaPanel usando Docker Compose.
+- Documentar o protocolo para que a preservação do jogo não dependa de uma única pessoa.
 
-## Current progress
+## Progresso atual
 
-### Recovered from the original 3.3.3 client
+### Já recuperado do cliente original 3.3.3
 
-- Original server-query bootstrap endpoint and packet framing.
-- Exact 28-byte little-endian query request used on TCP port **88**.
-- Query response envelope, raw/zlib behavior and NUL-terminated server-line payload.
-- `server_list.ini` generation behavior (`one returned string = one CRLF-terminated line`).
-- Exact server-list line grammar: `server_id/district/address/port/type/open/load/priority`.
-- Server type/open/load semantics and recommended-server selection behavior.
-- Member/login request header and complete field order, including the client's 16-byte padded string-block format.
-- Login-mode values observed in client wrappers (`4`, `100`, `200`, `201`).
-- Main OBB archive format: **PCK0 v15**, including a working clean-room index/extraction tool.
-- Battle networking architecture: native UDP channels with **KCP** used by the reliable-sequenced channel.
-- Runtime identified as native C++ with Cocos2d-x-related components, Lua and PhysX; it is not Unity.
+- Endpoint original de consulta/listagem de servidores.
+- Requisição exata de **28 bytes little-endian** usada na porta TCP **88**.
+- Formato da resposta de consulta, incluindo dados brutos/zlib e payload terminado em `NUL`.
+- Geração do `server_list.ini`.
+- Formato da linha de servidor: `server_id/district/address/port/type/open/load/priority`.
+- Semântica de tipo, estado, carga e prioridade de servidor.
+- Enquadramento `LenSplitProtocol` usado pela conexão de login/membro.
+- Estrutura e ordem dos campos de `CLIENT_LOGIN`.
+- Handshake `CLIENT_GET_VERIFY` / `SERVER_SET_VERIFY`.
+- `CLIENT_RET_ENCODE` / `SERVER_SET_ENCODE`.
+- Prefixo e estrutura de `SERVER_LOGIN_SUCCESS`.
+- Gramática genérica dos registros de personagem.
+- Estrutura de `CLIENT_CREATE_ROLE`.
+- Estrutura de `CLIENT_CHOOSE_ROLE`.
+- Estrutura de `CLIENT_WORLD_INFO` e `SERVER_WORLD_INFO`.
+- `SERVER_PROPERTY_TABLE` e `SERVER_RECORD_TABLE`, incluindo pacotes vazios válidos.
+- `SERVER_ENTRY_SCENE`.
+- Prova de que a chave de cena é **`Scene-Member`**.
+- Cena MOBA original identificada no cliente como **`119-0`** (`moba_chiji`).
+- Formato do arquivo principal do OBB: **PCK0 v15**.
+- Ferramenta própria para listar/extrair PCK0 em `tools/pck0_extract.py`.
+- Arquitetura de batalha identificada como canais UDP nativos com **KCP** no canal confiável/sequenciado.
+- Runtime identificado como C++ nativo com componentes Cocos2d-x, Lua e PhysX; o jogo não é Unity.
 
-See [`docs/CLIENT_3_3_3_ANALYSIS.md`](docs/CLIENT_3_3_3_ANALYSIS.md) for confirmed details.
+Os detalhes técnicos continuam documentados em `docs/`.
 
-### Server components
+## Componentes do servidor
 
-- `query-server`: client-compatible TCP/88 bootstrap query implementation with structured server-list generation.
-- `member-server`: original-protocol compatibility listener on TCP/7001. It validates recovered login framing while intentionally retaining only non-secret packet metadata until the response protocol is implemented.
-- `gateway`: Phase-0 HTTP guest/profile/matchmaking laboratory.
-- `game-server`: Phase-0 TCP/JSON synchronization laboratory; **not** the final battle protocol.
-- Docker Compose deployment.
-- Automated Go tests/build checks.
-- APK/XAPK/OBB static-analysis workflows.
-- PCK0 v15 parser/extractor at `tools/pck0_extract.py`.
-- Client query-host patcher at `tools/patch_client.py`.
+- **`query-server`** — implementação compatível com a consulta original TCP/88 e geração da lista de servidores.
+- **`member-server`** — serviço de compatibilidade do protocolo original na TCP/7001. Já entende o fluxo inicial de handshake, login, personagem, informações de mundo e entrada de cena recuperados.
+- **`gateway`** — laboratório HTTP da fase inicial; não representa o protocolo final do cliente original.
+- **`game-server`** — laboratório TCP/JSON da fase inicial; não representa ainda o protocolo de batalha final.
+- **Docker Compose** para subir os serviços.
+- Testes e build automáticos pelo GitHub Actions.
+- Ferramentas de análise de APK/XAPK/OBB.
+- Patcher de host do cliente em `tools/patch_client.py`.
 
-## Quick start
+## Início rápido
 
 ```bash
 cp .env.example .env
@@ -50,62 +61,98 @@ sh scripts/setup.sh
 sh scripts/smoke-test.sh
 ```
 
-Default services:
+Serviços padrão:
 
-- Original-compatible server query: `tcp://localhost:88`
-- Original member/login compatibility service: `tcp://localhost:7001`
-- Development Gateway/API: `http://localhost:8080`
-- Development game socket: `tcp://localhost:7000`
+- Consulta de servidores compatível com o cliente original: `tcp://localhost:88`
+- Serviço de login/membro: `tcp://localhost:7001`
+- Gateway de desenvolvimento: `http://localhost:8080`
+- Socket de jogo de desenvolvimento: `tcp://localhost:7000`
 
-To publish one server in the original selection UI, configure at minimum:
+Para publicar sua VPS na tela original de seleção de servidor:
 
 ```env
-LEGACY_SERVER_HOST=your.public.host
+LEGACY_SERVER_HOST=seu.ip.ou.dominio
 LEGACY_SERVER_PORT=7001
 ```
 
-The default generated record is marked recommended, open and low-load. `LEGACY_SERVER_TYPE`, `LEGACY_SERVER_OPEN`, `LEGACY_SERVER_LOAD`, and `LEGACY_SERVER_PRIORITY` can override those values.
-
-The archived client still contains its historical raw query IP. For interoperability testing, a tester-owned APK must be repackaged so `[server_query].Addr` in `assets/config.ini` points at the revival host. Do not probe the historical IP.
-
-## Development API
-
-The HTTP API and TCP/JSON game socket are scaffolding used while the real protocols are recovered. They are intentionally kept separate from the legacy-compatible implementations.
-
-### Create guest
+Também existe um configurador simples:
 
 ```bash
-curl -X POST http://localhost:8080/v1/auth/guest \
-  -H 'content-type: application/json' \
-  -d '{"name":"Alex"}'
+sh scripts/configure-public-host.sh SEU_IP_OU_DOMINIO
 ```
 
-### Join matchmaking
+## Ativar o fluxo legado recuperado
+
+Para um teste controlado com um cliente 3.3.3 de sua propriedade:
 
 ```bash
-curl -X POST http://localhost:8080/v1/matchmaking/enqueue \
-  -H 'authorization: Bearer YOUR_TOKEN' \
-  -H 'content-type: application/json' \
-  -d '{"mode":"legacy-duo"}'
+sh scripts/enable-legacy-flow.sh
+sh scripts/setup.sh
 ```
 
-## Client files
+Esse perfil ativa experimentalmente:
 
-Do **not** commit APK, XAPK or OBB files to this repository. Analysis/repacking tools operate on a client supplied separately by its owner. See `docs/REVERSE_ENGINEERING.md`.
+```text
+CLIENT_GET_VERIFY
+→ SERVER_SET_VERIFY
+
+CLIENT_RET_ENCODE
+→ SERVER_SET_ENCODE
+
+CLIENT_LOGIN
+→ SERVER_LOGIN_SUCCESS
+
+CLIENT_WORLD_INFO
+→ SERVER_WORLD_INFO
+
+CLIENT_CHOOSE_ROLE
+→ SERVER_PROPERTY_TABLE vazio
+→ SERVER_RECORD_TABLE vazio
+→ SERVER_ENTRY_SCENE 119-0
+```
+
+Isso significa que a estrutura necessária para tentar chegar ao mapa original está implementada, **mas ainda não afirmamos que o lobby/mapa funciona até o teste real com o APK modificado ser concluído**.
+
+## Quanto falta?
+
+Para o **primeiro teste de entrada no cliente original**, falta relativamente pouco: apontar o APK para a VPS, executar o fluxo e observar qual é o primeiro pacote ou estado que ainda bloqueia a entrada.
+
+Para o jogo ficar **realmente jogável online**, ainda existem blocos grandes de trabalho:
+
+1. Confirmar login → personagem → cena no APK real.
+2. Reconstruir lobby, perfil e estado inicial do jogador.
+3. Recuperar criação/entrada em sala e matchmaking original.
+4. Implementar transporte de batalha UDP/KCP.
+5. Sincronizar jogadores, movimento e entidades.
+6. Implementar combate, armas/habilidades, loot e inventário.
+7. Implementar zona fechando, morte, vitória e encerramento da partida.
+8. Adicionar persistência de conta/personagem e demais sistemas necessários.
+
+Ou seja: **a camada de descoberta inicial avançou bastante, mas o servidor completo ainda tem trabalho pela frente**. A vantagem é que agora já saímos da fase de procurar “onde o cliente conecta” e estamos chegando na fase de fazer o jogo efetivamente avançar.
+
+## Arquivos do cliente
+
+Não envie APK, XAPK ou OBB proprietários para este repositório. As ferramentas de análise e repacotamento trabalham com um cliente fornecido separadamente pelo próprio usuário.
 
 ## Roadmap
 
-1. ✅ Inspect pristine Survival Heroes 3.3.3 APK/XAPK + OBB.
-2. ✅ Recover the TCP/88 server-query request/response protocol.
-3. ✅ Recover the exact `server_list.ini` line schema and generate the revival-server record.
-4. Patch a tester-owned 3.3.3 client to use the revival bootstrap host.
-5. ✅ Recover the member/login request framing and field layout.
-6. 🚧 Recover the member/login server response and reach the original lobby.
-7. Recover room/match negotiation.
-8. Implement the native UDP/KCP battle transport and movement synchronization.
-9. Add combat, loot, shrinking zone and authoritative validation incrementally.
-10. Add persistence only after the original behavior is understood well enough to model it correctly.
+- [x] Inspecionar o Survival Heroes 3.3.3 e seus arquivos principais.
+- [x] Recuperar o protocolo TCP/88 de consulta de servidores.
+- [x] Recuperar o formato exato da lista de servidores.
+- [x] Recuperar o framing e a requisição de login/membro.
+- [x] Recuperar handshake e `SERVER_LOGIN_SUCCESS`.
+- [x] Recuperar criação e seleção de personagem.
+- [x] Recuperar `WORLD_INFO`.
+- [x] Recuperar tabelas iniciais de propriedade/registro.
+- [x] Recuperar `ENTRY_SCENE` e provar a chave `Scene-Member`.
+- [x] Identificar a cena MOBA `119-0`.
+- [ ] Testar o fluxo completo com APK 3.3.3 apontado para a VPS.
+- [ ] Chegar de forma confirmada ao lobby/mapa original.
+- [ ] Recuperar salas e matchmaking.
+- [ ] Implementar UDP/KCP de batalha.
+- [ ] Implementar sincronização, combate, loot e zona.
+- [ ] Implementar persistência e sistemas restantes.
 
-## Legal / preservation note
+## Nota de preservação
 
-This project is intended as an independent interoperability/preservation reimplementation. It contains no original server source code and should not redistribute proprietary client assets, trademarks or copyrighted game data.
+Este projeto é uma reimplementação independente para interoperabilidade e preservação. Ele não contém o código-fonte original do servidor e não deve redistribuir APK, OBB, marcas, artes ou outros dados proprietários do jogo.
