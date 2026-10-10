@@ -2,12 +2,14 @@ package main
 
 import (
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -20,6 +22,71 @@ type loginReadResult struct {
 	Meta      legacylogin.LoginMetadata
 	Consumed  int
 	Transport string
+}
+
+type verifyReplyConfig struct {
+	Enabled bool
+	Packet  legacylogin.SetVerifyPacket
+}
+
+func envBool(name string, fallback bool) bool {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return fallback
+	}
+	v, err := strconv.ParseBool(raw)
+	if err != nil {
+		log.Printf("invalid %s=%q; using %t", name, raw, fallback)
+		return fallback
+	}
+	return v
+}
+
+func envUint32(name string, fallback uint32) (uint32, error) {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return fallback, nil
+	}
+	v, err := strconv.ParseUint(raw, 0, 32)
+	if err != nil {
+		return 0, fmt.Errorf("%s=%q: %w", name, raw, err)
+	}
+	return uint32(v), nil
+}
+
+func loadVerifyReplyConfig() (verifyReplyConfig, error) {
+	var cfg verifyReplyConfig
+	cfg.Enabled = envBool("MEMBER_SEND_SET_VERIFY", false)
+	if !cfg.Enabled {
+		return cfg, nil
+	}
+
+	field0, err := envUint32("MEMBER_SET_VERIFY_FIELD0", 0)
+	if err != nil {
+		return cfg, err
+	}
+	mode, err := envUint32("MEMBER_SET_VERIFY_MODE", 0)
+	if err != nil {
+		return cfg, err
+	}
+	cfg.Packet.Field0 = field0
+	cfg.Packet.Mode = mode
+
+	if mode == 1 {
+		raw := strings.TrimSpace(os.Getenv("MEMBER_SET_VERIFY_KEY_HEX"))
+		if raw == "" {
+			return cfg, errors.New("MEMBER_SET_VERIFY_MODE=1 requires MEMBER_SET_VERIFY_KEY_HEX (16 bytes / 32 hex chars)")
+		}
+		key, err := hex.DecodeString(raw)
+		if err != nil {
+			return cfg, fmt.Errorf("MEMBER_SET_VERIFY_KEY_HEX: %w", err)
+		}
+		if len(key) != legacylogin.ServerSetVerifyKeySize {
+			return cfg, fmt.Errorf("MEMBER_SET_VERIFY_KEY_HEX must decode to %d bytes, got %d", legacylogin.ServerSetVerifyKeySize, len(key))
+		}
+		copy(cfg.Packet.Key[:], key)
+	}
+	return cfg, nil
 }
 
 func looksLikeRawLogin(data []byte) bool {
@@ -118,7 +185,26 @@ func logLoginMetadata(remote string, wireBytes int, meta legacylogin.LoginMetada
 	)
 }
 
-func handle(conn net.Conn) {
+func sendSetVerify(conn net.Conn, remote string, cfg verifyReplyConfig) error {
+	payload, err := legacylogin.BuildServerSetVerify(cfg.Packet)
+	if err != nil {
+		return err
+	}
+	wire, err := legacylogin.FrameWirePayload(payload)
+	if err != nil {
+		return err
+	}
+	if _, err := conn.Write(wire); err != nil {
+		return err
+	}
+	log.Printf(
+		"member %s: sent experimental SERVER_SET_VERIFY field0=%d mode=%d payload_bytes=%d wire_bytes=%d",
+		remote, cfg.Packet.Field0, cfg.Packet.Mode, len(payload), len(wire),
+	)
+	return nil
+}
+
+func handle(conn net.Conn, verifyCfg verifyReplyConfig) {
 	remote := conn.RemoteAddr().String()
 	defer conn.Close()
 	_ = conn.SetDeadline(time.Now().Add(15 * time.Second))
@@ -148,7 +234,14 @@ func handle(conn net.Conn) {
 				return
 			}
 			log.Printf("member %s: CLIENT_GET_VERIFY validated wire_bytes=%d", remote, wireBytes)
-			log.Printf("member %s: waiting to emit SERVER_SET_VERIFY until recovered field semantics/order are confirmed", remote)
+			if verifyCfg.Enabled {
+				if err := sendSetVerify(conn, remote, verifyCfg); err != nil {
+					log.Printf("member %s: SERVER_SET_VERIFY write failed: %v", remote, err)
+					return
+				}
+			} else {
+				log.Printf("member %s: SERVER_SET_VERIFY emission disabled; set MEMBER_SEND_SET_VERIFY=true for controlled client tests", remote)
+			}
 
 		case legacylogin.ClientRetEncodeOpcode:
 			// The body grammar is still under recovery. Do not print its bytes: it
@@ -177,18 +270,25 @@ func main() {
 	if addr == "" {
 		addr = ":7001"
 	}
+	verifyCfg, err := loadVerifyReplyConfig()
+	if err != nil {
+		log.Fatalf("invalid verify reply configuration: %v", err)
+	}
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer ln.Close()
-	log.Printf("legacy member/login compatibility server listening on %s", addr)
+	log.Printf(
+		"legacy member/login compatibility server listening on %s (experimental_set_verify=%t mode=%d field0=%d)",
+		addr, verifyCfg.Enabled, verifyCfg.Packet.Mode, verifyCfg.Packet.Field0,
+	)
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
 			log.Printf("accept: %v", err)
 			continue
 		}
-		go handle(conn)
+		go handle(conn, verifyCfg)
 	}
 }
