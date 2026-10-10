@@ -1,0 +1,59 @@
+name: Recover login verify fast path
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/recover-login-verify-fast.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install AArch64 binutils
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq binutils-aarch64-linux-gnu
+      - name: Download libapp
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euxo pipefail
+          mkdir -p client work/xapk work/apk reports
+          gh release download apk --pattern '*.xapk' --dir client
+          unzip -q "$(find client -type f -name '*.xapk' | head -n1)" -d work/xapk
+          unzip -q "$(find work/xapk -type f -name '*.apk' | head -n1)" 'lib/arm64-v8a/libapp.so' -d work/apk
+          cp work/apk/lib/arm64-v8a/libapp.so work/libapp.so
+      - name: Find exact login symbols
+        run: |
+          aarch64-linux-gnu-nm -D -n -C work/libapp.so > work/nm.txt || true
+          grep -Eai 'Game(Sender|Receiver).*?(Verify|Encode|Login)|Server(SetVerify|SetEncode|Login)|Client(GetVerify|RetEncode|Login)|Verify|Encode' work/nm.txt > reports/exact-symbols.txt || true
+          cat reports/exact-symbols.txt
+      - name: Dump small ranges around candidates
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re, subprocess
+          out=[]
+          for line in Path('reports/exact-symbols.txt').read_text(errors='replace').splitlines():
+              m=re.match(r'([0-9a-fA-F]+)\s+\w\s+(.*)', line)
+              if not m: continue
+              addr=int(m.group(1),16); name=m.group(2)
+              text=subprocess.check_output([
+                  'aarch64-linux-gnu-objdump','-d','-C','--no-show-raw-insn',
+                  f'--start-address=0x{addr:x}',f'--stop-address=0x{addr+0x1400:x}','work/libapp.so'
+              ], text=True, errors='replace')
+              out.append(f'===== {name} @0x{addr:x} =====\n{text}')
+          Path('reports/candidate-disassembly.txt').write_text('\n'.join(out),encoding='utf-8')
+          PY
+          strings -a -t x work/libapp.so | grep -Eai 'GET_VERIFY|SET_VERIFY|RET_ENCODE|SET_ENCODE|CLIENT_LOGIN|SERVER_LOGIN|verify|encode' > reports/verify-strings.txt || true
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: survival-heroes-login-verify-fast
+          path: reports/
+          retention-days: 7
