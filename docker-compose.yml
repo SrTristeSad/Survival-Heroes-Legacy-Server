@@ -1,0 +1,21 @@
+services:
+  gateway:
+    build: .
+    command: ["/usr/local/bin/gateway"]
+    restart: unless-stopped
+    environment:
+      GATEWAY_ADDR: ":8080"
+      GAME_PUBLIC_HOST: "${GAME_PUBLIC_HOST:-127.0.0.1}"
+      GAME_PORT: "7000"
+      MATCH_SIZE: "${MATCH_SIZE:-2}"
+    ports:
+      - "${GATEWAY_PORT:-8080}:8080"
+
+  game:
+    build: .
+    entrypoint: ["/usr/local/bin/game-server"]
+    restart: unless-stopped
+    environment:
+      GAME_ADDR: ":7000"
+    ports:
+      - "${GAME_PORT:-7000}:7000/tcp"
