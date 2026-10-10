@@ -1,0 +1,54 @@
+name: Trace server field callers
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/trace-server-field-callers.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  trace:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install tools
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq binutils-aarch64-linux-gnu
+      - name: Download libapp
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euxo pipefail
+          mkdir -p client work/xapk work/apk reports
+          gh release download apk --pattern '*.xapk' --dir client
+          unzip -q "$(find client -type f -name '*.xapk' | head -n1)" -d work/xapk
+          unzip -q "$(find work/xapk -type f -name '*.apk' | head -n1)" 'lib/arm64-v8a/libapp.so' -d work/apk
+      - name: Trace calls
+        shell: bash
+        run: |
+          LIB=work/apk/lib/arm64-v8a/libapp.so
+          aarch64-linux-gnu-objdump -d -C --no-show-raw-insn "$LIB" > work/full.txt
+          python3 - <<'PY'
+          from pathlib import Path
+          lines=Path('work/full.txt').read_text(errors='replace').splitlines()
+          needles=['bl\ta502f8 ','bl\ta503b4 ','bl\ta50454 ']
+          out=[]
+          for i,line in enumerate(lines):
+              if any(n in line for n in needles):
+                  out.append('===== '+line.strip()+' =====')
+                  out.extend(lines[max(0,i-80):min(len(lines),i+81)])
+                  out.append('')
+          Path('reports/server-field-callers.txt').write_text('\n'.join(out),encoding='utf-8')
+          print('hits',sum(1 for x in out if x.startswith('=====')))
+          PY
+          head -n 500 reports/server-field-callers.txt || true
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: survival-heroes-server-field-callers
+          path: reports/
+          retention-days: 7
