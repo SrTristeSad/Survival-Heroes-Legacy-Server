@@ -31,16 +31,17 @@ jobs:
           unzip -q "$APK" 'lib/arm64-v8a/libapp.so' 'assets/config.ini' -d work/apk
           cp work/apk/lib/arm64-v8a/libapp.so work/libapp.so
           cp work/apk/assets/config.ini reports/config-original.ini
-      - name: Procurar caminhos/config e simbolos de arquivo
+      - name: Gerar inventario e disassembly
         run: |
           strings -a -t x work/libapp.so > work/strings.txt
           aarch64-linux-gnu-nm -D -n -C work/libapp.so > work/nm.txt || true
+          aarch64-linux-gnu-readelf -SW work/libapp.so > work/sections.txt
+          aarch64-linux-gnu-readelf -rW work/libapp.so > work/relocs.txt || true
+          aarch64-linux-gnu-objdump -d -C --no-show-raw-insn work/libapp.so > work/disasm.txt
           grep -Eai 'config\.ini|server_query|server_list\.ini|FileUtils|writable|external|storage|asset|GetString|GetInt|Ini|INI|fopen|open\(' work/strings.txt > reports/strings-config.txt || true
           grep -Eai 'FileUtils|writable|external|storage|asset|Ini|INI|fopen|open|GetString|GetInt' work/nm.txt > reports/simbolos-config.txt || true
       - name: Resolver referencias de config.ini e server_query
         run: |
-          aarch64-linux-gnu-readelf -SW work/libapp.so > work/sections.txt
-          aarch64-linux-gnu-objdump -d -C --no-show-raw-insn work/libapp.so > work/disasm.txt
           python3 - <<'PY'
           from pathlib import Path
           import re
@@ -86,25 +87,37 @@ jobs:
           aarch64-linux-gnu-objdump -d -C --no-show-raw-insn \
             --start-address=0xa4f900 --stop-address=0xa4fc80 work/libapp.so \
             > reports/server-query-loader-disasm.txt || true
-          aarch64-linux-gnu-nm -D -n -C work/libapp.so | \
-            awk '$1 >= "0000000000956000" && $1 <= "0000000000959000" {print}' \
-            > reports/path-provider-symbols.txt || true
           grep -E 'getWritablePath|getPersistentStoragePath|getExternalStoragePath|fullPathForFilename|addSearchPath|setSearchPaths' work/nm.txt \
             > reports/storage-api-addresses.txt || true
-      - name: Identificar singleton por relocacoes ELF
+      - name: Identificar singleton e inicializacao
         run: |
-          aarch64-linux-gnu-readelf -rW work/libapp.so > work/relocs.txt || true
           grep -Ei '02be1d40|02bd9a48|02c633f8|02c7aba0|Application|FileUtils|AssetsManager|PackageSystem|GameOption|Storage|Writable|External' work/relocs.txt \
             > reports/relocacoes-caminho.txt || true
-          aarch64-linux-gnu-nm -D -n -C work/libapp.so | \
-            grep -E 'Singleton|ApplicationKit::Application|FileUtils|AssetsManager|PackageSystem|GameOption' \
+          grep -E 'Singleton|ApplicationKit::Application|FileUtils|AssetsManager|PackageSystem|GameOption|vtable for' work/nm.txt \
             > reports/singletons-candidatos.txt || true
-          aarch64-linux-gnu-objdump -s \
-            --start-address=0x2c633c0 --stop-address=0x2c63480 work/libapp.so \
-            > reports/objeto-caminho-bytes.txt || true
-          aarch64-linux-gnu-objdump -s \
-            --start-address=0x2c7ab60 --stop-address=0x2c7ac20 work/libapp.so \
-            > reports/objeto-secundario-bytes.txt || true
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          lines=Path('work/disasm.txt').read_text(errors='replace').splitlines()
+          target_page=0x2c633f8 & ~0xfff
+          target_off=0x2c633f8 & 0xfff
+          hits=[]
+          for i,line in enumerate(lines):
+              m=re.search(r'adrp\s+(x\d+),\s*([0-9a-fA-F]+)',line)
+              if not m or int(m.group(2),16)!=target_page: continue
+              reg=m.group(1)
+              for j in range(i+1,min(i+20,len(lines))):
+                  # direct add of object address
+                  ma=re.search(rf'add\s+{reg},\s*{reg},\s*#0x([0-9a-fA-F]+)',lines[j])
+                  # stores/loads using page register + immediate can also touch target
+                  mm=re.search(rf'\[(?:{reg}),\s*#([0-9]+)\]',lines[j])
+                  ok=(ma and int(ma.group(1),16)==target_off) or (mm and int(mm.group(1),10)==target_off)
+                  if ok:
+                      hits.append(f'===== direct xref target 0x2c633f8 near line {i} =====')
+                      hits.extend(lines[max(0,i-100):min(len(lines),j+180)])
+                      break
+          Path('reports/inicializacao-provedor.txt').write_text('\n'.join(hits),encoding='utf-8')
+          PY
       - uses: actions/upload-artifact@v4
         with:
           name: analise-server-txt
