@@ -25,8 +25,9 @@ type loginReadResult struct {
 }
 
 type verifyReplyConfig struct {
-	Enabled bool
-	Packet  legacylogin.SetVerifyPacket
+	Enabled       bool
+	SendSetEncode bool
+	Packet        legacylogin.SetVerifyPacket
 }
 
 func envBool(name string, fallback bool) bool {
@@ -57,6 +58,7 @@ func envUint32(name string, fallback uint32) (uint32, error) {
 func loadVerifyReplyConfig() (verifyReplyConfig, error) {
 	var cfg verifyReplyConfig
 	cfg.Enabled = envBool("MEMBER_SEND_SET_VERIFY", false)
+	cfg.SendSetEncode = envBool("MEMBER_SEND_SET_ENCODE", false)
 	if !cfg.Enabled {
 		return cfg, nil
 	}
@@ -185,22 +187,38 @@ func logLoginMetadata(remote string, wireBytes int, meta legacylogin.LoginMetada
 	)
 }
 
+func writeFramedPayload(conn net.Conn, payload []byte) (int, error) {
+	wire, err := legacylogin.FrameWirePayload(payload)
+	if err != nil {
+		return 0, err
+	}
+	n, err := conn.Write(wire)
+	return n, err
+}
+
 func sendSetVerify(conn net.Conn, remote string, cfg verifyReplyConfig) error {
 	payload, err := legacylogin.BuildServerSetVerify(cfg.Packet)
 	if err != nil {
 		return err
 	}
-	wire, err := legacylogin.FrameWirePayload(payload)
+	wireBytes, err := writeFramedPayload(conn, payload)
 	if err != nil {
-		return err
-	}
-	if _, err := conn.Write(wire); err != nil {
 		return err
 	}
 	log.Printf(
 		"member %s: sent experimental SERVER_SET_VERIFY field0=%d mode=%d payload_bytes=%d wire_bytes=%d",
-		remote, cfg.Packet.Field0, cfg.Packet.Mode, len(payload), len(wire),
+		remote, cfg.Packet.Field0, cfg.Packet.Mode, len(payload), wireBytes,
 	)
+	return nil
+}
+
+func sendSetEncode(conn net.Conn, remote string) error {
+	payload := legacylogin.BuildServerSetEncode()
+	wireBytes, err := writeFramedPayload(conn, payload)
+	if err != nil {
+		return err
+	}
+	log.Printf("member %s: sent experimental SERVER_SET_ENCODE payload_bytes=%d wire_bytes=%d", remote, len(payload), wireBytes)
 	return nil
 }
 
@@ -244,9 +262,15 @@ func handle(conn net.Conn, verifyCfg verifyReplyConfig) {
 			}
 
 		case legacylogin.ClientRetEncodeOpcode:
-			// The body grammar is still under recovery. Do not print its bytes: it
-			// may include key/transform material.
+			// The client-to-server body grammar is still under recovery. Do not
+			// print its bytes: it may include key/transform material.
 			log.Printf("member %s: CLIENT_RET_ENCODE observed payload_size=%d", remote, len(payload))
+			if verifyCfg.SendSetEncode {
+				if err := sendSetEncode(conn, remote); err != nil {
+					log.Printf("member %s: SERVER_SET_ENCODE write failed: %v", remote, err)
+					return
+				}
+			}
 
 		case legacylogin.ClientLoginOpcode:
 			meta, consumed, parseErr := legacylogin.InspectLoginRequest(payload)
@@ -280,8 +304,8 @@ func main() {
 	}
 	defer ln.Close()
 	log.Printf(
-		"legacy member/login compatibility server listening on %s (experimental_set_verify=%t mode=%d field0=%d)",
-		addr, verifyCfg.Enabled, verifyCfg.Packet.Mode, verifyCfg.Packet.Field0,
+		"legacy member/login compatibility server listening on %s (experimental_set_verify=%t set_encode=%t mode=%d field0=%d)",
+		addr, verifyCfg.Enabled, verifyCfg.SendSetEncode, verifyCfg.Packet.Mode, verifyCfg.Packet.Field0,
 	)
 	for {
 		conn, err := ln.Accept()
