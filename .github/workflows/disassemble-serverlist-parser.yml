@@ -1,0 +1,76 @@
+name: Inspect CParseServerListFile grammar
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/disassemble-serverlist-parser.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install AArch64 tools
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq binutils-aarch64-linux-gnu
+      - name: Download libapp
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euxo pipefail
+          mkdir -p client work/xapk work/apk reports
+          gh release download apk --pattern '*.xapk' --dir client
+          unzip -q "$(find client -type f -name '*.xapk' | head -n1)" -d work/xapk
+          unzip -q "$(find work/xapk -type f -name '*.apk' | head -n1)" 'lib/arm64-v8a/libapp.so' -d work/apk
+      - name: Locate parser symbols
+        run: |
+          LIB=work/apk/lib/arm64-v8a/libapp.so
+          aarch64-linux-gnu-nm -D -n -C "$LIB" | grep -E 'CParseServerListFile|ParseServerListFile|WriteServerListFile' > reports/parser-symbols.txt || true
+          cat reports/parser-symbols.txt
+      - name: Disassemble each parser symbol
+        shell: bash
+        run: |
+          set -euxo pipefail
+          LIB=work/apk/lib/arm64-v8a/libapp.so
+          python3 - <<'PY'
+          from pathlib import Path
+          import re, subprocess
+          rows=[]
+          for line in Path('reports/parser-symbols.txt').read_text(errors='replace').splitlines():
+              m=re.match(r'([0-9a-fA-F]+)\s+\w\s+(.*)',line)
+              if m: rows.append((int(m.group(1),16),m.group(2)))
+          rows.sort()
+          # Include the following symbol boundary when available; cap huge ranges.
+          allnm=subprocess.check_output(['aarch64-linux-gnu-nm','-D','-n','-C','work/apk/lib/arm64-v8a/libapp.so'],text=True,errors='replace').splitlines()
+          addrs=[]
+          for line in allnm:
+              m=re.match(r'([0-9a-fA-F]+)\s+\w\s+',line)
+              if m: addrs.append(int(m.group(1),16))
+          addrs=sorted(set(addrs))
+          out=[]
+          for addr,name in rows:
+              end=next((x for x in addrs if x>addr),addr+0x4000)
+              end=min(end,addr+0x7000)
+              out.append((addr,end,name))
+          Path('reports/parser-ranges.txt').write_text('\n'.join(f'{a:x} {b:x} {n}' for a,b,n in out)+'\n')
+          PY
+          : > reports/parser-disassembly.txt
+          while read start stop rest; do
+            echo "===== $rest @0x$start..0x$stop =====" >> reports/parser-disassembly.txt
+            aarch64-linux-gnu-objdump -d -C --no-show-raw-insn --start-address="0x$start" --stop-address="0x$stop" "$LIB" >> reports/parser-disassembly.txt || true
+          done < reports/parser-ranges.txt
+      - name: Extract grammar-related strings
+        run: |
+          LIB=work/apk/lib/arm64-v8a/libapp.so
+          strings -a -t x "$LIB" | grep -Eai 'server(_| )?(id|name|addr|port|district|issuer|state|type|recommend|page)|strtok|\\r\\n|server_list\.ini|ParseServerList|WriteServerList|\[server' > reports/parser-strings.txt || true
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: survival-heroes-serverlist-parser-grammar
+          path: reports/
+          retention-days: 7
