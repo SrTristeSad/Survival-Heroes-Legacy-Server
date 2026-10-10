@@ -1,0 +1,103 @@
+name: Search OBB handshake scripts
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/search-obb-handshake-scripts.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  search:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download archived client
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euxo pipefail
+          mkdir -p client work/xapk reports
+          gh release download apk --pattern '*.xapk' --dir client
+          unzip -q "$(find client -type f -name '*.xapk' | head -n1)" -d work/xapk
+          find work/xapk -maxdepth 2 -type f -printf '%p\n'
+      - name: Search decompressed script/config resources
+        run: |
+          OBB="$(find work/xapk -type f -name '*.obb' | head -n1)"
+          test -n "$OBB"
+          python3 - "$OBB" <<'PY'
+          import collections
+          import importlib.util
+          import pathlib
+          import sys
+
+          obb = pathlib.Path(sys.argv[1])
+          spec = importlib.util.spec_from_file_location('pck0', 'tools/pck0_extract.py')
+          pck0 = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(pck0)
+
+          header, entries = pck0.load_index(obb)
+          terms = [
+              b'on_set_encode', b'on_set_verify', b'CLIENT_RET_ENCODE',
+              b'CLIENT_GET_VERIFY', b'set_encode', b'ret_encode',
+              b'get_verify', b'SERVER_SET_ENCODE', b'SERVER_SET_VERIFY',
+          ]
+          terms_lower = [x.lower() for x in terms]
+          interesting_ext = {
+              '.lua', '.luac', '.txt', '.ini', '.xml', '.json', '.cfg',
+              '.conf', '.script', '.bytes', '.csv', '.lst', '.py', '.js'
+          }
+          ext_counts = collections.Counter(pathlib.PureWindowsPath(e.path).suffix.lower() for e in entries)
+          pathlib.Path('reports/extension-counts.txt').write_text(
+              '\n'.join(f'{ext or "<none>"}\t{count}' for ext, count in ext_counts.most_common()) + '\n',
+              encoding='utf-8'
+          )
+
+          candidates=[]
+          for e in entries:
+              p=e.path.replace('\\','/').lower()
+              ext=pathlib.PurePosixPath(p).suffix
+              if ext in interesting_ext or any(k in p for k in ('lua','script','login','network','net/','verify','encode')):
+                  if e.size <= 8 * 1024 * 1024:
+                      candidates.append(e)
+
+          hits=[]
+          failures=[]
+          with obb.open('rb') as fp:
+              for idx,e in enumerate(candidates,1):
+                  try:
+                      data=pck0.read_entry(fp,e)
+                  except Exception as exc:
+                      failures.append(f'{e.path}\t{exc}')
+                      continue
+                  low=data.lower()
+                  matched=[]
+                  for raw,needle in zip(terms,terms_lower):
+                      pos=low.find(needle)
+                      if pos >= 0:
+                          lo=max(0,pos-120); hi=min(len(data),pos+len(needle)+220)
+                          context=data[lo:hi]
+                          printable=''.join(chr(b) if 32 <= b < 127 else '.' for b in context)
+                          matched.append(f'  term={raw.decode(errors="replace")} offset={pos}\n  context={printable}')
+                  if matched:
+                      hits.append(f'PATH {e.path}\nSIZE {e.size}\n' + '\n'.join(matched))
+
+          pathlib.Path('reports/search-summary.txt').write_text(
+              f'entries={len(entries)}\ncandidates={len(candidates)}\nhits={len(hits)}\nfailures={len(failures)}\n',
+              encoding='utf-8'
+          )
+          pathlib.Path('reports/handshake-hits.txt').write_text('\n\n'.join(hits)+'\n',encoding='utf-8')
+          pathlib.Path('reports/failures.txt').write_text('\n'.join(failures[:500])+'\n',encoding='utf-8')
+          print(pathlib.Path('reports/search-summary.txt').read_text())
+          print(pathlib.Path('reports/handshake-hits.txt').read_text()[:12000])
+          PY
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: survival-heroes-obb-handshake-search
+          path: reports/
+          retention-days: 7
