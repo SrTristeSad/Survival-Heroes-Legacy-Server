@@ -26,7 +26,8 @@ const (
 // Survival Heroes 3.3.3 FormLoginServers code.
 //
 // Recovered order:
-//   server_id / district_key / address / port / type / open / load / priority
+//
+//	server_id / district_key / address / port / type / open / load / priority
 //
 // type: 0=normal, 1=recommended, 2=new.
 // open: 0=stopped, 1=open.
