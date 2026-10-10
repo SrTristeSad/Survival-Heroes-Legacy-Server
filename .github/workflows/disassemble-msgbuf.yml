@@ -1,0 +1,41 @@
+name: Disassemble query message serializer
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/disassemble-msgbuf.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  disassemble:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install tools
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq binutils-aarch64-linux-gnu
+      - name: Get client library
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euxo pipefail
+          mkdir -p client work/xapk work/apk reports
+          gh release download apk --pattern '*.xapk' --dir client
+          unzip -q "$(find client -type f -name '*.xapk' | head -n1)" -d work/xapk
+          unzip -q "$(find work/xapk -type f -name '*.apk' | head -n1)" 'lib/arm64-v8a/libapp.so' -d work/apk
+      - name: Disassemble CMsgBuf
+        run: |
+          LIB=work/apk/lib/arm64-v8a/libapp.so
+          aarch64-linux-gnu-objdump -d -C --no-show-raw-insn \
+            --start-address=0x1ea0100 --stop-address=0x1ea0750 "$LIB" > reports/msgbuf-disassembly.txt
+          aarch64-linux-gnu-nm -D -C "$LIB" | grep 'QueryServerStateInfo::CMsgBuf' > reports/msgbuf-symbols.txt || true
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: survival-heroes-msgbuf-disassembly
+          path: reports/
+          retention-days: 7
