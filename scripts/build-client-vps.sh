@@ -4,14 +4,20 @@ set -eu
 ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$ROOT_DIR"
 
+SERVER_FILE="$ROOT_DIR/client-config/server.txt"
 HOST="${1:-}"
 PORT="${2:-88}"
 
+# Prioridade: argumento explicito -> client-config/server.txt -> .env.
+if [ -z "$HOST" ] && [ -f "$SERVER_FILE" ]; then
+  HOST=$(sed -e 's/#.*$//' -e 's/[[:space:]]//g' "$SERVER_FILE" | sed -n '/./{p;q;}')
+fi
 if [ -z "$HOST" ] && [ -f .env ]; then
   HOST=$(sed -n 's/^LEGACY_SERVER_HOST=//p' .env | tail -n1)
 fi
 if [ -z "$HOST" ]; then
-  echo "Uso: sh scripts/build-client-vps.sh <IP-ou-dominio> [porta-bootstrap]" >&2
+  echo "Uso: sh scripts/build-client-vps.sh [IP-ou-dominio] [porta-bootstrap]" >&2
+  echo "Ou preencha client-config/server.txt." >&2
   exit 2
 fi
 case "$PORT" in
@@ -51,12 +57,16 @@ CACHE_DIR="$ROOT_DIR/build/cache"
 WORK_DIR="$ROOT_DIR/build/cliente-work"
 KEYSTORE="$BUILD_DIR/survival-heroes-teste.jks"
 XAPK_ORIGINAL="$CACHE_DIR/Survival-Heroes-3.3.3-original.xapk"
-OUT_XAPK="$BUILD_DIR/Survival-Heroes-3.3.3-Legacy-${HOST}.xapk"
-OUT_APK="$BUILD_DIR/Survival-Heroes-3.3.3-Legacy-${HOST}.apk"
+SAFE_HOST=$(printf '%s' "$HOST" | tr '/: ' '___')
+OUT_XAPK="$BUILD_DIR/Survival-Heroes-3.3.3-Legacy-${SAFE_HOST}.xapk"
+OUT_APK="$BUILD_DIR/Survival-Heroes-3.3.3-Legacy-${SAFE_HOST}.apk"
 
 mkdir -p "$BUILD_DIR" "$CACHE_DIR"
 rm -rf "$WORK_DIR"
 mkdir -p "$WORK_DIR/xapk"
+
+# Guarda junto do build o endereco usado, para ficar facil trocar/repetir depois.
+printf '%s\n' "$HOST" > "$BUILD_DIR/server.txt"
 
 if [ ! -s "$XAPK_ORIGINAL" ]; then
   echo "Localizando o XAPK que voce enviou para a Release 'apk'..."
@@ -122,7 +132,6 @@ apksigner sign \
 
 apksigner verify --verbose "$SIGNED" >/dev/null
 
-# Confere que o host realmente foi gravado no APK assinado.
 if ! unzip -p "$SIGNED" assets/config.ini | grep -F "Addr=$HOST" >/dev/null; then
   echo "Falha de validacao: o host nao apareceu no config.ini final." >&2
   exit 1
@@ -135,7 +144,7 @@ fi
 cp "$SIGNED" "$OUT_APK"
 
 # Reaproveita o XAPK fornecido pelo proprio usuario e troca somente o APK base.
-# O OBB e todos os demais arquivos permanecem byte a byte como estavam.
+# O OBB e os demais arquivos permanecem byte a byte como estavam.
 cp "$XAPK_ORIGINAL" "$OUT_XAPK"
 zip -q -d "$OUT_XAPK" "$APK_REL" >/dev/null || true
 cp "$SIGNED" "$WORK_DIR/xapk/$APK_REL"
@@ -149,11 +158,15 @@ Survival Heroes 3.3.3 - cliente de teste Legacy
 
 Bootstrap configurado: $HOST:$PORT
 Login/member anunciado pelo servidor: $HOST:7001
+Arquivo de endereco usado no build: server.txt
 
-O APK foi modificado apenas em assets/config.ini e reassinado com uma chave de teste
-criada nesta VPS. Por isso ele nao pode ser instalado por cima de uma instalacao
-assinada pela Snail Games. Se houver uma instalacao antiga do Survival Heroes,
-desinstale-a antes de instalar este XAPK de teste.
+O APK atual foi modificado em assets/config.ini e reassinado com uma chave de teste
+criada nesta VPS. O projeto tambem esta analisando o carregamento nativo para fazer
+o server.txt ser lido diretamente pelo aplicativo em uma versao posterior, sem
+precisar reassinar ao trocar o servidor.
+
+Por causa da nova assinatura, ele nao pode ser instalado por cima de uma versao
+assinada pela Snail Games. Desinstale uma instalacao antiga antes deste teste.
 
 Arquivo recomendado para instalar:
 $(basename "$OUT_XAPK")
@@ -163,9 +176,10 @@ $(basename "$OUT_APK")
 EOF
 
 printf '\n================ CLIENTE GERADO ================\n'
-printf 'Bootstrap: %s:%s\n' "$HOST" "$PORT"
-printf 'XAPK:      %s\n' "$OUT_XAPK"
-printf 'APK:       %s\n' "$OUT_APK"
+printf 'server.txt: %s\n' "$BUILD_DIR/server.txt"
+printf 'Bootstrap:  %s:%s\n' "$HOST" "$PORT"
+printf 'XAPK:       %s\n' "$OUT_XAPK"
+printf 'APK:        %s\n' "$OUT_APK"
 printf 'SHA-256 XAPK: '
 sha256sum "$OUT_XAPK" | awk '{print $1}'
 printf 'SHA-256 APK:  '
